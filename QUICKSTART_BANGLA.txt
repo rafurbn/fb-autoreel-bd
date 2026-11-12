@@ -1,0 +1,34 @@
+FB AutoReel BD - ১০০% ফ্রি ও অটোমেটেড ফেইসবুক রিলস কন্টেন্ট ইঞ্জিন
+========================================================================
+
+১. ডিপেনডেন্সি ইনস্টল করুন:
+   pip install -r requirements.txt
+
+২. .env.example ফাইলটিকে কপি করে .env নামে সংরক্ষণ করুন এবং আপনার Keys বসান:
+   - GEMINI_API_KEY (https://aistudio.google.com/ থেকে ফ্রি)
+   - FB_PAGE_ID এবং FB_PAGE_ACCESS_TOKEN (মেটা বিজনেস ম্যানেজার)
+   - PIXABAY_API_KEY (https://pixabay.com/api/ থেকে; ব্যাকগ্রাউন্ড ভিডিওর প্রাথমিক উৎস)
+   - PEXELS_API_KEY (ঐচ্ছিক বিকল্প ভিডিও উৎস)
+
+৩. টেস্ট রান (ফেসবুকে পোস্ট ছাড়া শুধু ভিডিও তৈরি দেখতে):
+   python main.py --test
+
+৪. সরাসরি তৈরি ও ফেসবুকে পোস্ট:
+   python main.py
+
+৫. প্রতিদিন ক্লাউডে অটো-পোস্ট করতে:
+   ক) সম্পূর্ণ প্রজেক্টটি GitHub Repository-তে পুশ করুন; workflow ফাইলটি default branch-এ থাকতে হবে।
+   খ) Repository > Settings > Secrets and variables > Actions > New repository secret-এ গিয়ে
+      নিচের নামগুলো হুবহু দিয়ে secret যোগ করুন; value হিসেবে নিজ নিজ key/token দিন:
+      GEMINI_API_KEY, FB_PAGE_ID, FB_PAGE_ACCESS_TOKEN, PIXABAY_API_KEY
+   গ) PEXELS_API_KEY ঐচ্ছিক fallback; BRAND_NAME-ও ঐচ্ছিক।
+   ঘ) Actions ট্যাবে "Daily 100% Free Automated Facebook Reel" workflow-টি Enable করুন।
+      প্রথমবার "Run workflow" দিয়ে পরীক্ষা করতে পারেন; এটি Facebook-এ পোস্ট করবে।
+   ঙ) workflow প্রতিদিন UTC 03:00-এ চলে, অর্থাৎ বাংলাদেশ সময় সকাল 09:00-এ।
+      GitHub Actions চালু থাকতে হবে এবং repository-র Actions usage limit অতিক্রম করা যাবে না।
+
+   মনে রাখুন: কম্পিউটারের .env ফাইল GitHub Actions-এ যায় না; key-গুলো শুধু GitHub Secrets-এ যোগ করুন।
+   secret কখনো source code-এ লিখবেন না বা public repository-তে .env আপলোড করবেন না।
+
+৬. শুধু ভিডিও বানিয়ে পরীক্ষা করতে (Facebook পোস্ট ছাড়াই):
+   python main.py --test
