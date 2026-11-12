@@ -23,7 +23,7 @@ jobs:
       - name: FFmpeg ও বাংলা ফন্ট ইনস্টলেশন
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-kalpurush fonts-beng
+          sudo apt-get install -y ffmpeg fonts-lohit-beng-bengali
 
       - name: ডিপেনডেন্সি ইনস্টল
         run: |
