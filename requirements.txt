@@ -1,5 +1,7 @@
-google-genai>=2.4.0
-edge-tts>=6.1.19
-requests>=2.31.0
-apscheduler>=3.10.4
-python-dotenv>=1.0.1
+# ভার্সন পিন করা: রিলিজ না দেখে অটো-আপডেট হলে পাইপলাইন হঠাৎ ভাঙবে না।
+# আপডেট করতে চাইলে একটা একটা করে বাড়িয়ে `python main.py --offline --test` চালান।
+google-genai==3.1.0
+edge-tts==7.3.1
+requests==2.34.2
+apscheduler==3.11.3
+python-dotenv==1.2.4

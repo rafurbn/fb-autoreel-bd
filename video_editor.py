@@ -32,27 +32,53 @@ def get_drawtext_font_path() -> Path | None:
         ])
     return next((path for path in candidates if path.is_file()), None)
 
+def get_subtitle_font_family() -> str:
+    """libass ফন্ট ম্যাচিংয়ের জন্য পরিবার-নাম (ফাইল-পাথ নয়)"""
+    return FONT_PATH.stem if FONT_PATH.is_file() else "Noto Sans Bengali"
+
+def escape_filter_path(file_path: Path) -> str:
+    """
+    FFmpeg filter আর্গুমেন্টে নিরাপদ পাথ:
+    ১. প্রথমে backslash নিজেই escape (\\ → \\\\) — আগে না করলে পরে যোগ করা \\: নষ্ট হয়
+    ২. তারপর : → \\: আর ' → \\' (Windows ড্রাইভ-letter ও ফাঁকা স্থানসহ পাথ)
+    """
+    path = str(file_path).replace("\\", "/").replace("\\", "\\\\").replace("$", "\\$")
+    path = path.replace("'", "'\\''").replace(":", "\\:")
+    return path
+
 def render_final_monetized_reel(
     raw_video_path: Path,
     voice_audio_path: Path,
     subtitles_list: list,
     output_video_path: Path,
     bg_music_path: Path = None,
-    logo_path: Path = None
+    logo_path: Path = None,
+    subtitle_events: list | None = None,
+    subtitle_fallback_span: tuple[float, float] | None = None
 ) -> bool:
     """
     সবগুলো উপাদান একসাথে করে ফেইসবুক রিলসের জন্য সম্পূর্ণ রেডি ও মনিটাইজেশন-উপযোগী MP4 ভিডিও প্রস্তুত করে
+
+    subtitle_events: TTS থেকে পাওয়া (শুরু, শেষ, লেখা) tuples — থাকলে এগুলোই ব্যবহার হয়
+    subtitle_fallback_span: TTS টাইমিং না পেলে সব সাবটাইটেল ভাগ করে বসানোর (শুরু, শেষ) সীমা
     """
     logger.info("FFmpeg এডিটিং পাইপলাইন শুরু হচ্ছে...")
 
-    # সাবটাইটেল ASS / SRT ফাইল তৈরি
-    srt_path = output_video_path.with_suffix(".srt")
-    create_bangla_srt_file(subtitles_list, srt_path)
-
-    # অডিও দৈর্ঘ্য নির্ণয়
+    # অডিও দৈর্ঘ্য নির্ণয় (এটাই ভিডিওর চূড়ান্ত দৈর্ঘ্য)
     duration = get_media_duration(voice_audio_path)
     if duration <= 0:
-        duration = 35.0  # ডিফল্ট সময়
+        duration = 35.0  # ডিফল্ট সময়
+
+    # সাবটাইটেল ফাইল তৈরি: আসল TTS টাইমিং থাকলে সেটি, নাহলে আনুপাতিক ভাগ
+    # ASS (নয় SRT) ব্যবহার করছি কারণ এতে PlayRes ও Style স্পষ্টভাবে লেখা যায় —
+    # ffmpeg-এর force_style স্ট্রিং Rilis ৭/৮-এ Alignment/MarginV কাজ করে না।
+    ass_path = output_video_path.with_suffix(".ass")
+    events = subtitle_events or build_subtitle_events(
+        subtitles_list,
+        start=subtitle_fallback_span[0] if subtitle_fallback_span else 0.0,
+        end=subtitle_fallback_span[1] if subtitle_fallback_span else duration,
+    )
+    write_ass_file(events, ass_path, width=1080, height=1920)
 
     # ৯:১৬ ক্রপ এবং স্কেলিং (1080x1920) + কালার গ্রেডিং
     video_filters = [
@@ -61,42 +87,43 @@ def render_final_monetized_reel(
     ]
 
     # ফেইসবুক রিলস ফ্রেম ও ব্র্যান্ডের নাম যুক্ত করা
+    # (সাবটাইটেলের আগে বসে, তাতে স্ক্রিপ্টের লেখা ব্যানারের উপরে না থাকলেও ওয়াটারমার্ক সবসময় দেখা যায়)
     drawtext_font = get_drawtext_font_path()
     if drawtext_font:
-        escaped_font = str(drawtext_font).replace("\\", "/").replace(":", "\\:")
+        escaped_font = escape_filter_path(drawtext_font)
+        safe_brand = BRAND_NAME.replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:")
         brand_banner = (
-            f"drawtext=fontfile='{escaped_font}':text='{BRAND_NAME}':fontcolor=white:"
+            f"drawtext=fontfile='{escaped_font}':text='{safe_brand}':fontcolor=white:"
             f"fontsize=42:x=(w-text_w)/2:y=120:box=1:boxcolor=black@0.6:boxborderw=15"
         )
         video_filters.append(brand_banner)
     else:
-        logger.warning("ব্র্যান্ড ব্যানারের জন্য উপযুক্ত ফন্ট পাওয়া যায়নি; ব্যানার ছাড়া রেন্ডার হবে।")
+        logger.warning("ব্র্যান্ড ব্যানারের জন্য উপযুক্ত ফন্ট পাওয়া যায়নি; ব্যানার ছাড়া রেন্ডার হবে।")
 
-    # সাবটাইটেল বার্ন ফিল্টার
-    # লিনাক্সে Noto Sans Bengali অথবা Kalpurush ফন্ট ব্যবহার
-    if srt_path.exists():
-        escaped_srt = str(srt_path).replace("\\", "/").replace(":", "\\:")
-        sub_filter = (
-            f"subtitles='{escaped_srt}':force_style='FontSize=26,FontName=Kalpurush,"
-            f"PrimaryColour=&H0000FFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=2,"
-            f"Shadow=1,Alignment=2,MarginV=280'"
-        )
-        video_filters.append(sub_filter)
+    # সাবটাইটেল বার্ন — অবশ্যই scale/crop-এর পরে, যাতে ১০৮০×১৯২০ ফ্রেমের সাথে PlayRes মেলে
+    if ass_path.exists() and ass_path.stat().st_size > 0:
+        escaped_ass = escape_filter_path(ass_path)
+        video_filters.append(f"ass=filename='{escaped_ass}'")
+    else:
+        logger.warning("সাবটাইটেল ফাইল তৈরি হয়নি; সাবটাইটেল ছাড়া রেন্ডার হবে।")
 
     cmd = [
         "ffmpeg", "-y",
         "-stream_loop", "-1", "-i", str(raw_video_path),  # [0] ভিডিও
-        "-i", str(voice_audio_path),                      # [1] ভয়েস
+        "-i", str(voice_audio_path),                      # [1] ভয়েস
     ]
 
+    next_input_index = 2
     logo_input_index = None
-    if logo_path and logo_path.exists():
-        logo_input_index = 2
+    if logo_path and Path(logo_path).exists():
+        logo_input_index = next_input_index
+        next_input_index += 1
         cmd.extend(["-i", str(logo_path)])
 
     music_input_index = None
-    if bg_music_path and bg_music_path.exists():
-        music_input_index = 2 + (logo_input_index is not None)
+    if bg_music_path and Path(bg_music_path).exists():
+        music_input_index = next_input_index
+        next_input_index += 1
         cmd.extend(["-stream_loop", "-1", "-i", str(bg_music_path)])
 
     filter_graph = f"[0:v]{','.join(video_filters)}[vbase]"
@@ -125,7 +152,7 @@ def render_final_monetized_reel(
 
     # ভিডিও এক্সপোর্ট সেটিংস
     cmd.extend([
-        "-t", str(duration + 1.0),
+        "-t", str(duration),
         "-c:v", "libx264",
         "-preset", "medium",
         "-crf", "22",
@@ -138,7 +165,7 @@ def render_final_monetized_reel(
         str(output_video_path)
     ])
 
-    logger.info(f"রেন্ডারিং শুরু হয়েছে... আনুমানিক সময়: {int(duration)} সেকেন্ড")
+    logger.info(f"রেন্ডারিং শুরু হয়েছে... আনুমানিক সময়: {int(duration)} সেকেন্ড")
     try:
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         logger.info(f"ভিডিও রেন্ডারিং সফলভাবে সম্পন্ন: {output_video_path}")
@@ -147,23 +174,87 @@ def render_final_monetized_reel(
         logger.error(f"FFmpeg রেন্ডার ফেইল করেছে: {err.stderr.decode('utf-8', errors='ignore')}")
         return False
 
-def create_bangla_srt_file(subtitles: list, srt_file_path: Path):
-    """ডায়নামিক টাইমস্ট্যাম্প সহ SRT ফাইল তৈরি"""
+def build_subtitle_events(subtitles: list, start: float, end: float) -> list:
+    """
+    স্ক্রিপ্টের প্রতিটি লাইনকে উপলব্ধ সময়ের (start..end) মধ্যে সমানভাবে ভাগ করে দেয়।
+    TTS-এর শব্দ-স্তরের টাইমিং না পাওয়া গেলে এটি ফলব্যাক।
+    """
+    texts = [sub.get("text", "") if isinstance(sub, dict) else str(sub) for sub in subtitles or []]
+    texts = [text.strip() for text in texts if text and text.strip()]
+    if not texts:
+        return []
+
+    # লাইনের দৈর্ঘ্য অনুযায়ী সময় ভাগ (লম্বা বাক্য বেশি সময় পায়)
+    weights = [max(len(text), 8) for text in texts]
+    total_weight = sum(weights)
+    span = max(end - start, 1.0)
+
+    events = []
+    cursor = start
+    for text, weight in zip(texts, weights):
+        share = span * (weight / total_weight)
+        events.append((cursor, min(cursor + share, end), text))
+        cursor += share
+    return events
+
+def format_ass_time(seconds: float) -> str:
+    """ASS টাইম: H:MM:SS.cc (সেন্টিসেকেন্ড)"""
+    centis = int(round(max(seconds, 0.0) * 100))
+    secs = centis // 100
+    return f"{secs // 3600}:{(secs // 60) % 60:02d}:{secs % 60:02d}.{centis % 100:02d}"
+
+def write_ass_file(events: list, ass_file_path: Path, width: int = 1080, height: int = 1920) -> None:
+    """
+    (শুরু, শেষ, লেখা) tuples থেকে ASS সাবটাইটেল লেখে।
+    PlayResX/Y স্পষ্ট দিলে libass লেখার আকার ও নিচের দূরত্ব সঠিকভাবে হিসাব করে
+    (SRT + force_style-এ Alignment/MarginV সব ffmpeg বিল্ডে মানা যায় না)।
+    রং: PrimaryColour ASS-এ &HAABBGGRR — এখানে সাদা লেখা, কালো আউটলাইন।
+    """
+    font_name = get_subtitle_font_family()
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        f"PlayResX: {width}\nPlayResY: {height}\n"
+        "WrapStyle: 0\n"
+        "ScaledBorderAndShadow: yes\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
+        "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
+        "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        f"Style: Reel,{font_name},64,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,"
+        "-1,0,0,0,100,100,0,0,1,4,0,2,60,60,320,1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+    lines = []
+    for start, end, text in events:
+        safe_text = (
+            str(text).replace("\\", "\\\\").replace("{", "(").replace("}", ")")
+            .replace("\r", " ").replace("\n", "\\N")
+        )
+        lines.append(
+            f"Dialogue: 0,{format_ass_time(start)},{format_ass_time(max(end, start + 0.3))},"
+            f"Reel,,0,0,0,,{safe_text}\n"
+        )
+    with open(ass_file_path, "w", encoding="utf-8") as f:
+        f.write(header + "".join(lines))
+
+def write_srt_file(events: list, srt_file_path: Path) -> None:
+    """(শুরু, শেষ, লেখা) tuples থেকে SRT ফাইল লেখে (ডিবাগ/আলাদা ব্যবহারের জন্য)"""
     with open(srt_file_path, "w", encoding="utf-8") as f:
-        curr_time = 0.0
-        step = 4.5  # প্রতিটি সাবটাইটেলের সময়কাল
-        for idx, sub in enumerate(subtitles, 1):
-            start = format_srt_time(curr_time)
-            end = format_srt_time(curr_time + step)
-            text = sub.get("text", "") if isinstance(sub, dict) else str(sub)
-            f.write(f"{idx}\n{start} --> {end}\n{text}\n\n")
-            curr_time += step
+        for idx, (start, end, text) in enumerate(events, 1):
+            f.write(
+                f"{idx}\n{format_srt_time(max(start, 0.0))} --> {format_srt_time(max(end, start + 0.1))}\n"
+                f"{text}\n\n"
+            )
 
 def format_srt_time(seconds: float) -> str:
-    millis = int((seconds - int(seconds)) * 1000)
-    secs = int(seconds) % 60
-    mins = (int(seconds) // 60) % 60
-    hours = int(seconds) // 3600
+    # আগে (seconds - int(seconds)) * 1000 করলে float precision-এ 3661.999 → 998 হতো;
+    # মিলিসেকেন্ডে গোল করে ভাগ করলে এটা হয় না
+    total_ms = int(round(max(seconds, 0.0) * 1000))
+    secs, millis = divmod(total_ms, 1000)
+    mins, secs = divmod(secs, 60)
+    hours, mins = divmod(mins, 60)
     return f"{hours:02d}:{mins:02d}:{secs:02d},{millis:03d}"
 
 def get_media_duration(file_path: Path) -> float:

@@ -1,34 +1,53 @@
-FB AutoReel BD - ১০০% ফ্রি ও অটোমেটেড ফেইসবুক রিলস কন্টেন্ট ইঞ্জিন
+FB AutoReel BD - বাংলা ফেইসবুক রিলস কন্টেন্ট ইঞ্জিন
 ========================================================================
 
-১. ডিপেনডেন্সি ইনস্টল করুন:
-   pip install -r requirements.txt
+সতর্কতা: সব API-র ফ্রি টিয়ার আছে, কিন্তু কোটা সীমিত। "১০০% আনলিমিটেড" নয়।
+         স্টক ভিডিও + AI ভয়েস দিয়ে বানানো কন্টেন্ট "মৌলিক" হিসেবে গণ্য হবে — এমন কোনো গ্যারান্টি নেই।
 
-২. .env.example ফাইলটিকে কপি করে .env নামে সংরক্ষণ করুন এবং আপনার Keys বসান:
-   - GEMINI_API_KEY (https://aistudio.google.com/ থেকে ফ্রি)
-   - FB_PAGE_ID এবং FB_PAGE_ACCESS_TOKEN (মেটা বিজনেস ম্যানেজার)
-   - PIXABAY_API_KEY (https://pixabay.com/api/ থেকে; ব্যাকগ্রাউন্ড ভিডিওর প্রাথমিক উৎস)
-   - PEXELS_API_KEY (ঐচ্ছিক বিকল্প ভিডিও উৎস)
+১. প্রস্তুতি:
+   - Python 3.10+ ও FFmpeg (ffmpeg ও ffprobe PATH-এ থাকতে হবে) ইনস্টল করুন।
+   - pip install -r requirements.txt
 
-৩. টেস্ট রান (ফেসবুকে পোস্ট ছাড়া শুধু ভিডিও তৈরি দেখতে):
+২. কনফিগারেশন:
+   - .env.example ফাইলটি কপি করে .env নামে সংরক্ষণ করুন এবং আপনার Keys বসান:
+     GEMINI_API_KEY (https://aistudio.google.com/apikey)
+     FB_PAGE_ID এবং FB_PAGE_ACCESS_TOKEN (মেটা বিজনেস ম্যানেজার; pages_manage_posts + publish_video)
+     PIXABAY_API_KEY (https://pixabay.com/api/ ; ব্যাকগ্রাউন্ড ভিডিওর প্রাথমিক উৎস)
+     PEXELS_API_KEY (ঐচ্ছিক বিকল্প ভিডিও উৎস)
+   - ঐচ্ছিক: TTS_VOICE, BRAND_NAME
+
+৩. ব্র্যান্ড ফাইল (ঐচ্ছিক, না থাকলে পাইপলাইন চলবে):
+   - assets/logo.png , assets/music/sample_bg.mp3 , assets/fonts/Kalpurush.ttf
+   - বিস্তারিত: assets/README.md
+
+৪. টেস্ট রান (ফেসবুকে পোস্ট ছাড়া শুধু ভিডিও তৈরি):
    python main.py --test
+   আউটপুট দেখুন: output/final_reel_*.mp4
 
-৪. সরাসরি তৈরি ও ফেসবুকে পোস্ট:
+   API কী ছাড়াই সম্পূর্ণ ড্রাই রান (স্যাম্পল স্ক্রিপ্ট, কোটা খরচ নেই):
+   python main.py --offline --test
+
+৪খ. স্ক্রিপ্টের ধরন:  --category funny | motivation | lifestyle | story | news
+   উদাহরণ:  python main.py --test --category motivation
+
+৫. সরাসরি তৈরি ও ফেসবুকে পোস্ট:
    python main.py
+   সফল হলে exit code 0, ফেইল হলে 1।
 
-৫. প্রতিদিন ক্লাউডে অটো-পোস্ট করতে:
-   ক) সম্পূর্ণ প্রজেক্টটি GitHub Repository-তে পুশ করুন; workflow ফাইলটি default branch-এ থাকতে হবে।
-   খ) Repository > Settings > Secrets and variables > Actions > New repository secret-এ গিয়ে
-      নিচের নামগুলো হুবহু দিয়ে secret যোগ করুন; value হিসেবে নিজ নিজ key/token দিন:
+৫খ. টেস্ট চালাতে (কোড বদলালে আগে এটা চালান):
+   pip install -r requirements-dev.txt
+   python -m pytest
+
+৬. প্রতিদিন ক্লাউডে অটো-পোস্ট:
+   ক) প্রজেক্টটি GitHub Repository-তে পুশ করুন; workflow ফাইল default branch-এ থাকতে হবে।
+   খ) Settings > Secrets and variables > Actions > New repository secret:
       GEMINI_API_KEY, FB_PAGE_ID, FB_PAGE_ACCESS_TOKEN, PIXABAY_API_KEY
-   গ) PEXELS_API_KEY ঐচ্ছিক fallback; BRAND_NAME-ও ঐচ্ছিক।
-   ঘ) Actions ট্যাবে "Daily 100% Free Automated Facebook Reel" workflow-টি Enable করুন।
-      প্রথমবার "Run workflow" দিয়ে পরীক্ষা করতে পারেন; এটি Facebook-এ পোস্ট করবে।
-   ঙ) workflow প্রতিদিন UTC 03:00-এ চলে, অর্থাৎ বাংলাদেশ সময় সকাল 09:00-এ।
-      GitHub Actions চালু থাকতে হবে এবং repository-র Actions usage limit অতিক্রম করা যাবে না।
+      (PEXELS_API_KEY ও BRAND_NAME ঐচ্ছিক)
+   গ) Actions ট্যাবে "Daily Automated Facebook Reel" workflow Enable করুন।
+      "Run workflow" চাপলে ক্যাটাগরি বেছে নিতে ও "শুধু টেস্ট" দিতে পারবেন।
+      test_only ছাড়া চালালে সেটি Facebook-এ সত্যিই পোস্ট করবে।
+   ঘ) workflow প্রতিদিন UTC 03:00-এ চলে, অর্থাৎ বাংলাদেশ সময় সকাল 09:00-এ।
+      GitHub Actions চালু থাকতে হবে।
 
-   মনে রাখুন: কম্পিউটারের .env ফাইল GitHub Actions-এ যায় না; key-গুলো শুধু GitHub Secrets-এ যোগ করুন।
+   মনে রাখুন: কম্পিউটারের .env ফাইল GitHub Actions-এ যায় না; key-গুলো শুধু GitHub Secrets-এ যোগ করুন।
    secret কখনো source code-এ লিখবেন না বা public repository-তে .env আপলোড করবেন না।
-
-৬. শুধু ভিডিও বানিয়ে পরীক্ষা করতে (Facebook পোস্ট ছাড়াই):
-   python main.py --test

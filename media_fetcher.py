@@ -2,6 +2,7 @@
 
 import requests
 import random
+import subprocess
 from pathlib import Path
 import logging
 from config import PIXABAY_API_KEY, PEXELS_API_KEY
@@ -146,14 +147,42 @@ def fetch_vertical_background_video(search_query: str, target_path: Path) -> boo
         logger.error(f"Pexels API ত্রুটি: {str(e)}")
         return download_fallback_video(target_path)
 
+# একটাই URL-এর উপরে নির্ভর করা যায় না (অনেক পুরোনো লিঙ্ক এখন 403 দেয়)
+FALLBACK_VIDEO_URLS = (
+    "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big_Buck_Bunny_360_10s_1MB.mp4",
+    "https://sample-videos.com/video321/mp4/720/big_buck_bunny_720p_1mb.mp4",
+    "https://download.samplelib.com/mp4/sample-5s.mp4",
+)
+
 def download_fallback_video(target_path: Path) -> bool:
-    """ওপেন সোর্স ব্যাকআপ স্যাম্পল ভিডিও ডাউনলোড"""
-    fallback_url = "https://assets.mixkit.co/videos/preview/mixkit-vertical-street-with-neon-lights-at-night-42484-large.mp4"
+    """একাধিক ওপেন-সোর্স ভিডিও চেষ্টা করে; সব ব্যর্থ হলে লোকাল ভিডিও বানায়"""
+    for url in FALLBACK_VIDEO_URLS:
+        try:
+            logger.info(f"ব্যাকআপ ভিডিও ডাউনলোড হচ্ছে: {url.rsplit('/', 1)[-1]}")
+            _download_video(url, target_path, timeout=30)
+            logger.info(f"ব্যাকআপ ভিডিও সংরক্ষণ সম্পন্ন: {target_path}")
+            return True
+        except (requests.RequestException, OSError, ValueError) as ex:
+            logger.warning(f"এই ফলব্যাক URL কাজ করেনি ({str(ex)[:120]})")
+
+    # শেষ উপায়: ইন্টারনেট ছাড়াও চলবে — FFmpeg দিয়ে একটি সাদামাটা গ্রেডিয়েন্ট ভিডিও
+    return generate_offline_video(target_path)
+
+def generate_offline_video(target_path: Path, duration: int = 12) -> bool:
+    """দুর্বল কিন্তু বৈধ ৯:১৬ ব্যাকগ্রাউন্ড ভিডিও (FFmpeg lavfi) — শেষ ফলব্যাক"""
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", f"gradients=size=1080x1920:rate=24:duration={duration}:speed=0.05",
+        "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+        str(target_path),
+    ]
     try:
-        logger.info("ব্যাকআপ ওপেন-সোর্স ভিডিও ডাউনলোড হচ্ছে...")
-        _download_video(fallback_url, target_path, timeout=20)
-        logger.info(f"ব্যাকআপ ভিডিও সংরক্ষণ সম্পন্ন: {target_path}")
+        logger.warning("সব ভিডিও উৎস ব্যর্থ — FFmpeg দিয়ে লোকাল ব্যাকগ্রাউন্ড ভিডিও তৈরি হচ্ছে।")
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        logger.info(f"লোকাল ব্যাকগ্রাউন্ড ভিডিও তৈরি হয়েছে: {target_path}")
         return True
-    except (requests.RequestException, OSError, ValueError) as ex:
-        logger.error(f"ফলব্যাক ভিডিও ডাউনলোড ব্যর্থ: {str(ex)}")
+    except (OSError, subprocess.CalledProcessError) as ex:
+        details = ex.stderr.decode("utf-8", errors="ignore")[:300] if hasattr(ex, "stderr") and ex.stderr else str(ex)
+        logger.error(f"লোকাল ভিডিও তৈরি ব্যর্থ: {details}")
         return False
