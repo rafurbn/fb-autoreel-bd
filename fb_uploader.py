@@ -30,8 +30,8 @@ def _log_graph_error(step: str, resp: requests.Response) -> None:
         f"type={error.get('type')} | {error.get('message')}"
     )
 
-def _wait_until_ready(video_id: str, timeout: int = 300, interval: int = 5) -> bool:
-    """ফেইসবুক ভিডিও প্রসেসিং শেষ (Ready) হওয়া পর্যন্ত অপেক্ষা করে; finish এর আগে জরুরি"""
+def _wait_until_uploaded(video_id: str, timeout: int = 300, interval: int = 5) -> bool:
+    """ভিডিও আপলোড সম্পন্ন হওয়া পর্যন্ত অপেক্ষা করে; Meta-র upload_complete অবস্থাও সম্পন্ন।"""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -43,16 +43,16 @@ def _wait_until_ready(video_id: str, timeout: int = 300, interval: int = 5) -> b
             if resp.ok:
                 status = (resp.json().get("status") or {})
                 state = status.get("video_status")
-                logger.info(f"ভিডিও প্রসেসিং স্টেট: {state}")
-                if state == "ready":
+                logger.info(f"ভিডিও আপলোড স্টেট: {state}")
+                if state in {"ready", "upload_complete"}:
                     return True
-                if state in {"error", "upload_failed"}:
-                    logger.error(f"ফেইসবুক ভিডিও প্রসেসিং ফেইল করেছে: {status}")
+                if state in {"error", "upload_failed", "expired"}:
+                    logger.error(f"ফেইসবুক ভিডিও আপলোড/প্রসেসিং ফেইল করেছে: {status}")
                     return False
         except requests.exceptions.RequestException as e:
             logger.warning(f"ভিডিও স্টেট চেক করা যাচ্ছে না: {e}")
         time.sleep(interval)
-    logger.error(f"ভিডিও {timeout} সেকেন্ডেও প্রসেসিং শেষ হয়নি।")
+    logger.error(f"ভিডিও {timeout} সেকেন্ডেও আপলোড সম্পন্ন হয়নি।")
     return False
 
 def upload_reel_to_facebook(video_path: Path, caption: str, hashtags: list = None) -> bool:
@@ -110,8 +110,8 @@ def upload_reel_to_facebook(video_path: Path, caption: str, hashtags: list = Non
 
         logger.info("ভিডিও ফাইল ফেইসবুক সার্ভারে সফলভাবে পৌঁছেছে!")
 
-        # ধাপ ২.৫: ফেইসবুক ট্রান্সকোডিং শেষ হওয়া পর্যন্ত অপেক্ষা (না হলে finish ব্যর্থ হয়)
-        if not _wait_until_ready(video_id):
+        # Meta upload_complete-কে upload শেষ হিসেবে জানায়; এরপর finish ধাপ প্রকাশনা শুরু করে।
+        if not _wait_until_uploaded(video_id):
             return False
 
         # ধাপ ৩: রিলস পাবলিশ করা

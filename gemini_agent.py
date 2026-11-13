@@ -114,7 +114,7 @@ def generate_viral_reel_script(category="funny", offline=False) -> dict:
     try:
         logger.info("জেমিনি এআই-এর কাছে নতুন স্ক্রিপ্টের জন্য অনুরোধ পাঠানো হচ্ছে...")
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.8-flash",
             contents=user_query,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,

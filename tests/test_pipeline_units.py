@@ -56,6 +56,29 @@ def test_every_category_is_supported():
         assert generate_viral_reel_script(category=category, offline=True)["title"]
 
 
+def test_generate_script_uses_available_gemini_model(monkeypatch):
+    from types import SimpleNamespace
+
+    requested_models = []
+
+    class FakeModels:
+        def generate_content(self, **kwargs):
+            requested_models.append(kwargs["model"])
+            return SimpleNamespace(text='{"spoken_script":"নমুনা স্ক্রিপ্ট।"}')
+
+    class FakeClient:
+        def __init__(self, api_key):
+            self.models = FakeModels()
+
+    monkeypatch.setattr("gemini_agent.GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr("google.genai.Client", FakeClient)
+
+    script = generate_viral_reel_script()
+
+    assert script["spoken_script"] == "নমুনা স্ক্রিপ্ট।"
+    assert requested_models == ["gemini-3.8-flash"]
+
+
 def test_fallback_script_has_usable_fields():
     for key in ("title", "spoken_script", "subtitles", "video_search_prompt", "caption", "hashtags"):
         assert FALLBACK_SCRIPT.get(key), key
@@ -103,7 +126,8 @@ def test_uploader_returns_false_when_publish_is_not_success(tmp_path, monkeypatc
     assert upload_reel_to_facebook(video, "caption") is False
 
 
-def test_uploader_returns_true_only_on_success(tmp_path, monkeypatch):
+@pytest.mark.parametrize("video_status", ["ready", "upload_complete"])
+def test_uploader_returns_true_only_on_success(tmp_path, monkeypatch, video_status):
     video = tmp_path / "v.mp4"
     video.write_bytes(b"\x00" * 10)
     monkeypatch.setattr("fb_uploader.FB_PAGE_ID", "123")
@@ -131,7 +155,7 @@ def test_uploader_returns_true_only_on_success(tmp_path, monkeypatch):
 
         @staticmethod
         def get(url, **kwargs):
-            return FakeResponse({"status": {"video_status": "ready"}})
+            return FakeResponse({"status": {"video_status": video_status}})
 
     monkeypatch.setattr("fb_uploader.requests", FakeRequests)
     assert upload_reel_to_facebook(video, "caption") is True
