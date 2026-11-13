@@ -62,7 +62,7 @@ jobs:
           sudo apt-get update
           # সতর্কতা: "fonts-noto-bengali" নামে কোনো Ubuntu প্যাকেজ নেই — এমন নাম দিলে
           # apt-get এক ধাপেই ফেইল করে (আজকের ব্যর্থতার কারণ এটাই ছিল)।
-          packages=()
+          packages=(ffmpeg)
           for pkg in fontconfig fonts-noto-core fonts-lohit-beng-bengali fonts-beng fonts-beng-extra; do
             if apt-cache show "$pkg" >/dev/null 2>&1; then
               packages+=("$pkg")
@@ -71,6 +71,8 @@ jobs:
             fi
           done
           sudo apt-get install -y "${packages[@]}"
+          command -v ffmpeg
+          command -v ffprobe
           sudo fc-cache -f >/dev/null
           echo "--- ffmpeg: $(ffmpeg -version 2>/dev/null | head -n1)"
           echo "--- ffmpeg encoders: $(ffmpeg -hide_banner -encoders 2>/dev/null | grep -c h264)"
