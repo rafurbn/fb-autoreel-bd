@@ -36,12 +36,19 @@ permissions:
 
 jobs:
   build-and-post:
-    runs-on: ubuntu-latest
+    # ubuntu-latest এখন Ubuntu 26.04 (resolute) — প্যাকেজ/ফন্টের নাম বদলাতে পারে।
+    # পিন করে রাখলে হঠাৎ লাল দেখবেন না।
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
 
     steps:
       - name: চেকআউট কোডবেস
         uses: actions/checkout@v4
+
+      - name: কোন কমিট চলছে দেখাও
+        run: |
+          echo "commit: $(git rev-parse --short HEAD)"
+          echo "os: $(. /etc/os-release && echo $PRETTY_NAME)"
 
       - name: পাইথন সেটআপ
         uses: actions/setup-python@v5
