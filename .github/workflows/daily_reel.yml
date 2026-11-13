@@ -49,9 +49,23 @@ jobs:
           python-version: '3.11'
 
       - name: FFmpeg ও বাংলা ফন্ট ইনস্টলেশন
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-noto-core fonts-noto-bengali fonts-lohit-beng-bengali
+          # সতর্কতা: "fonts-noto-bengali" নামে কোনো Ubuntu প্যাকেজ নেই — এমন নাম দিলে
+          # apt-get এক ধাপেই ফেইল করে (আজকের ব্যর্থতার কারণ এটাই ছিল)।
+          packages=()
+          for pkg in fontconfig fonts-noto-core fonts-lohit-beng-bengali fonts-beng fonts-beng-extra; do
+            if apt-cache show "$pkg" >/dev/null 2>&1; then
+              packages+=("$pkg")
+            else
+              echo "::warning::$pkg পাওয়া যায়নি, বাদ দেওয়া হলো"
+            fi
+          done
+          sudo apt-get install -y "${packages[@]}"
+          sudo fc-cache -f >/dev/null
+          fc-list :lang=bn family | head -n 5 || true
 
       - name: ডিপেনডেন্সি ইনস্টল
         run: |
