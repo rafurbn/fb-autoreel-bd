@@ -72,7 +72,28 @@ jobs:
           done
           sudo apt-get install -y "${packages[@]}"
           sudo fc-cache -f >/dev/null
-          fc-list :lang=bn family | head -n 5 || true
+          echo "--- ffmpeg: $(ffmpeg -version 2>/dev/null | head -n1)"
+          echo "--- ffmpeg encoders: $(ffmpeg -hide_banner -encoders 2>/dev/null | grep -c h264)"
+          echo "--- bengali fonts:"
+          fc-list :lang=bn family | sort -u | head -n 5 || true
+          # বাংলা গ্লাইফ আঁকা যায় কিনা — ছোট ছবি দিয়ে যাচাই
+          ffmpeg -y -f lavfi -i "color=c=black:s=640x200" \
+            -vf "drawtext=font='Noto Sans Bengali':text='বাংলা টেস্ট':fontcolor=white:fontsize=48" \
+            -frames:v 1 /tmp/fontcheck.png -loglevel error \
+            && echo "font render OK" || echo "::warning::বাংলা ফন্টে টেক্সট আঁকা যায়নি"
+          # প্রতিদিনের মতো একটি MP4 বানিয়ে তার গঠন যাচাই করি (পাইপলাইনের আগে)
+          ffmpeg -y -f lavfi -i "smptebars=size=360x640:rate=5:duration=1" \
+            -pix_fmt yuv420p -c:v libx264 /tmp/probe.mp4 -loglevel error
+          python - <<'PY'
+          import subprocess
+          from pathlib import Path
+          header = Path('/tmp/probe.mp4').read_bytes()[:64]
+          print('probe first 12 bytes:', header[:12])
+          print('has ftyp:', b'ftyp' in header)
+          out = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=format_name',
+                                '-of', 'csv=p=0', '/tmp/probe.mp4'], capture_output=True, text=True)
+          print('ffprobe format:', out.stdout.strip() or out.stderr.strip())
+          PY
 
       - name: ডিপেনডেন্সি ইনস্টল
         run: |
