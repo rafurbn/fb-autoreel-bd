@@ -79,6 +79,22 @@ def test_generate_script_uses_available_gemini_model(monkeypatch):
     assert requested_models == ["gemini-3.8-flash"]
 
 
+def test_generate_script_propagates_api_errors(monkeypatch):
+    class FakeModels:
+        def generate_content(self, **kwargs):
+            raise RuntimeError("Gemini unavailable")
+
+    class FakeClient:
+        def __init__(self, api_key):
+            self.models = FakeModels()
+
+    monkeypatch.setattr("gemini_agent.GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr("google.genai.Client", FakeClient)
+
+    with pytest.raises(RuntimeError, match="Gemini unavailable"):
+        generate_viral_reel_script()
+
+
 def test_fallback_script_has_usable_fields():
     for key in ("title", "spoken_script", "subtitles", "video_search_prompt", "caption", "hashtags"):
         assert FALLBACK_SCRIPT.get(key), key

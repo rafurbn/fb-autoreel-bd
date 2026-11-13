@@ -49,7 +49,7 @@ SYSTEM_PROMPT = """
 """
 
 # ------------------------------------------------------------
-# ফলব্যাক স্ক্রিপ্ট — --offline মোডে এবং Gemini ব্যর্থ হলে ব্যবহৃত হয়
+# ফলব্যাক স্ক্রিপ্ট — শুধু স্পষ্টভাবে --offline মোডে ব্যবহৃত হয়
 # ------------------------------------------------------------
 FALLBACK_SCRIPT = {
     "title": "বাঙালির সকালের চা ও রাজনীতি",
@@ -111,22 +111,17 @@ def generate_viral_reel_script(category="funny", offline=False) -> dict:
         "টপিকের ওপর ৩০ সেকেন্ডের বাংলা রিলস স্ক্রিপ্ট তৈরি করো। প্রতিদিন একই টপিক দিও না।"
     )
 
-    try:
-        logger.info("জেমিনি এআই-এর কাছে নতুন স্ক্রিপ্টের জন্য অনুরোধ পাঠানো হচ্ছে...")
-        response = client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=user_query,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                response_mime_type="application/json",
-            ),
-        )
-        data = json.loads(response.text)
-        if not isinstance(data, dict) or not str(data.get("spoken_script", "")).strip():
-            raise ValueError("Gemini JSON-এ spoken_script নেই")
-        logger.info(f"সফলভাবে স্ক্রিপ্ট তৈরি হয়েছে: {data.get('title')}")
-        return data
-    except Exception as e:
-        logger.error(f"Gemini API ত্রুটি: {str(e)}")
-        # কোটা শেষ/নেটওয়ার্ক সমস্যা হলে ফলব্যাক টেমপ্লেট, যাতে ওই দিনের রিলস বন্ধ না হয়
-        return copy.deepcopy(FALLBACK_SCRIPT)
+    logger.info("জেমিনি এআই-এর কাছে নতুন স্ক্রিপ্টের জন্য অনুরোধ পাঠানো হচ্ছে...")
+    response = client.models.generate_content(
+        model="gemini-3.8-flash",
+        contents=user_query,
+        config=types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            response_mime_type="application/json",
+        ),
+    )
+    data = json.loads(response.text)
+    if not isinstance(data, dict) or not str(data.get("spoken_script", "")).strip():
+        raise ValueError("Gemini JSON-এ spoken_script নেই")
+    logger.info(f"সফলভাবে স্ক্রিপ্ট তৈরি হয়েছে: {data.get('title')}")
+    return data

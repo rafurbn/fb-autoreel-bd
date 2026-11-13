@@ -26,6 +26,7 @@ FB AutoReel BD - বাংলা ফেইসবুক রিলস কন্ট
 
    API কী ছাড়াই সম্পূর্ণ ড্রাই রান (স্যাম্পল স্ক্রিপ্ট, কোটা খরচ নেই):
    python main.py --offline --test
+   প্রোডাকশনে Gemini স্ক্রিপ্ট তৈরি করতে না পারলে পোস্ট হবে না; স্যাম্পল কেবল --offline মোডে ব্যবহৃত হয়।
 
 ৪খ. স্ক্রিপ্টের ধরন:  --category funny | motivation | lifestyle | story | news
    উদাহরণ:  python main.py --test --category motivation
