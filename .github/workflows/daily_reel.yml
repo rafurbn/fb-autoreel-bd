@@ -2,10 +2,10 @@ name: Daily Automated Facebook Reel
 
 on:
   schedule:
-    # প্রতিদিন বাংলাদেশ সময় সকাল ৯:০০ টায় (UTC ৩:০০ টায়)
-    # সতর্কতা: GitHub-এর cron কখনো কয়েক মিনিট দেরি করে চলে; নির্দিষ্ট মিনিটে নিশ্চয়তা নেই
+    # প্রতিদিন বাংলাদেশ সময় সকাল ৯:০০ (UTC ৩:০০)
+    # সতর্কতা: GitHub-এর cron কয়েক মিনিট দেরি করতে পারে; fix minute নিশ্চিত নয়
     - cron: '0 3 * * *'
-  # 'Run workflow' বাটন দিয়ে যেকোনো সময় হাতে চালানো (টেস্টসহ)
+  # হাতে চালানোর বাটন (টেস্ট/আজকের পোস্ট মিস হলে ব্যবহার করুন)
   workflow_dispatch:
     inputs:
       category:
@@ -20,10 +20,19 @@ on:
         default: false
         type: boolean
 
+# নোট: schedule-এ `inputs` কনটেক্সট থাকে না (শুধু workflow_dispatch-এ),
+# তাই নিচে গুলো env + shell দিয়ে safe ভাবে handle করা হয়েছে।
+env:
+  CATEGORY: ${{ github.event.inputs.category || 'funny' }}
+  TEST_ONLY: ${{ github.event.inputs.test_only || 'false' }}
+
 concurrency:
-  # দুই রান একসাথে চললে একই ভিডিও দুইবার পোস্ট হতে পারে — তাই আগেরটা বাতিল
+  # দুই রান একসাথে চললে একই ভিডিও দুইবার পোস্ট হতে পারে
   group: daily-reel
   cancel-in-progress: false
+
+permissions:
+  contents: write   # প্রতিদিন heartbeat commit (নিচে) লেখার জন্য
 
 jobs:
   build-and-post:
@@ -61,9 +70,10 @@ jobs:
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           BRAND_NAME: ${{ secrets.BRAND_NAME }}
         run: |
-          python main.py \
-            --category "${{ inputs.category || 'funny' }}" \
-            ${{ inputs.test_only && '--test' || '' }}
+          ARGS="--category ${CATEGORY:-funny}"
+          if [ "$TEST_ONLY" = "true" ]; then ARGS="$ARGS --test"; fi
+          echo "running: python main.py $ARGS"
+          python main.py $ARGS
 
       - name: আউটপুট ভিডিও সংরক্ষণ (ডিবাগের জন্য)
         if: always()
@@ -73,3 +83,40 @@ jobs:
           path: output/
           retention-days: 7
           if-no-files-found: ignore
+
+      # public রিপোতে ৬০ দিন নিষ্ক্রিয় থাকলে schedule নিজেই বন্ধ হয়ে যায়;
+      # প্রতিদিন একটা ছোট commit হলে সেটা আর হয় না + কোন দিন চলেছে তাও দেখা যায়।
+      - name: Heartbeat (schedule সচল রাখতে)
+        if: always()
+        run: |
+          mkdir -p .status
+          printf 'last_run_utc=%s\nevent=%s\nresult=%s\n' \
+            "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            "${{ github.event_name }}" \
+            "${{ job.status }}" > .status/last_run.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .status/last_run.txt
+          git commit -m "chore: daily run heartbeat [skip ci]" || echo "no change"
+          git push
+
+      - name: ফেইল হলে স্পষ্ট রিপোর্ট
+        if: failure()
+        run: |
+          echo "### ❌ আজকের রিলস পোস্ট হয়নি" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "উপরের লাল ধাপে আসল কারণ দেখা যাচ্ছে। দুই-তিনটি সম্ভাব্য কারণ:" >> $GITHUB_STEP_SUMMARY
+          echo "1. \`FB_PAGE_ACCESS_TOKEN\` মেয়াদোত্তীর্ণ / \`publish_video\` পারমিশন নেই" >> $GITHUB_STEP_SUMMARY
+          echo "2. \`GEMINI_API_KEY\` দৈনিক কোটা শেষ" >> $GITHUB_STEP_SUMMARY
+          echo "3. \`PIXABAY_API_KEY\`/\`PEXELS_API_KEY\` নেই বা কোটা শেষ" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "দ্রুত সমাধান: Actions → Run workflow (test_only untick) দিয়ে আবার চালান।" >> $GITHUB_STEP_SUMMARY
+
+  # পোস্টের পরে একবার চেক: রান সফল হয়নি বা বাদ পড়েছে কিনা জানানো
+  notify-failure:
+    needs: build-and-post
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: ফেইল নোটিশ
+        run: echo "::error::আজকের অটো-পোস্ট ব্যর্থ হয়েছে — Actions লগ দেখুন।"
