@@ -101,6 +101,17 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
+                - name: ডিপেনডেন্সি ইনস্টল
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Install and Upgrade TTS Packages
+        run: |
+          pip install --upgrade edge-tts gTTS requests
+
+      - name: ইউনিট ও FFmpeg রেন্ডার টেস্ট
+        run: python -m pytest
 
       - name: ইউনিট ও FFmpeg রেন্ডার টেস্ট
         run: python -m pytest
