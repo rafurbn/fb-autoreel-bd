@@ -1,20 +1,29 @@
 """
-tts_engine.py - Edge-TTS লাইব্রেরি দিয়ে উচ্চমানের প্রাকৃতিক বাংলা অডিও জেনারেশন
-কোনো এপিআই কী লাগে না, তবে Microsoft-এর পাবলিক speech endpoint ব্যবহার করে
-(অনানুষ্ঠানিক, SLA নেই) — ব্যর্থ হলে ব্যাকআপ হিসেবে ফিক্সড সময় ভাগ হয়
-
-লক্ষ্য: অডিও + প্রতিটি বাক্যের আসল শুরুর সময় (শব্দ-স্তরের WordBoundary দিয়ে)
+tts_engine.py - Edge-TTS + মাল্টি-লেয়ার ব্যাকআপ (Voice Rotation, gTTS, HuggingFace)
+লক্ষ্য: অডিও + প্রতিটি বাক্যের আসল শুরুর সময় (.vtt সাবটাইটেল) নিশ্চিত করা
 """
 
 import asyncio
 from pathlib import Path
 import logging
+import subprocess
+import requests
 from config import TTS_VOICE, TTS_RATE, TTS_PITCH
 
 logger = logging.getLogger(__name__)
 
-# বাংলা সহ দাক্ষিণাত্যের ভাষায় স্পেস-ভিত্তিক শব্দ না ধরা হলে এই অক্ষরগুলো দিয়ে ভাগ করি
 SENTENCE_ENDINGS = ("।", "|", ".", "?", "!", "…")
+
+# ধাপ-১ ও ধাপ-২: মূল ভয়েস এবং বিকল্প বাংলা ভয়েসগুলোর তালিকা
+BACKUP_VOICES = [
+    TTS_VOICE,
+    "bn-BD-NabanitaNeural",
+    "bn-BD-PradeepNeural",
+    "bn-IN-TanishaaNeural",
+    "bn-IN-BashkarNeural",
+]
+# ডুপ্লিকেট ভয়েস বাদ দিয়ে ক্রম ঠিক রাখা
+VOICE_POOL = list(dict.fromkeys(BACKUP_VOICES))
 
 
 def split_sentences(text: str) -> list[str]:
@@ -35,12 +44,11 @@ def split_sentences(text: str) -> list[str]:
     return sentences
 
 
-async def _synthesize(text: str, output_audio_path: Path) -> dict:
-    """একটি টেক্সট একবার চুরি-মুক্ত ভাবে 합성: অডিও + WordBoundary ইভেন্ট"""
+async def _synthesize_edge(text: str, voice: str, output_audio_path: Path) -> dict:
+    """Edge-TTS দিয়ে একটি বাক্য তৈরি (অডিও + WordBoundary)"""
     import edge_tts
 
-    communicate = edge_tts.Communicate(text=text, voice=TTS_VOICE, rate=TTS_RATE, pitch=TTS_PITCH)
-    # 1 tick = 100 ন্যানোসেকেন্ড; শুরুর offset জানতে 0 থেকে গুনি
+    communicate = edge_tts.Communicate(text=text, voice=voice, rate=TTS_RATE, pitch=TTS_PITCH)
     start_ticks = None
     end_ticks = 0
     audio_bytes = 0
@@ -51,7 +59,6 @@ async def _synthesize(text: str, output_audio_path: Path) -> dict:
                 audio_file.write(chunk["data"])
                 audio_bytes += len(chunk["data"])
             elif chunk["type"] in {"WordBoundary", "SentenceBoundary"}:
-                # বাংলা ভয়েস অনেক সময় WordBoundary দেয় না, শুধু SentenceBoundary দেয়
                 offset = int(chunk["offset"])
                 end_offset = offset + int(chunk["duration"])
                 if start_ticks is None or offset < start_ticks:
@@ -60,65 +67,132 @@ async def _synthesize(text: str, output_audio_path: Path) -> dict:
 
     if start_ticks is None:
         start_ticks = 0
+
     return {
         "text": text,
         "start": start_ticks * 1e-7,
         "end": end_ticks * 1e-7,
-        "words": end_ticks > 0,
-        "empty": audio_bytes == 0,
+        "empty": audio_bytes < 512,
     }
+
+
+def _synthesize_gtts_sync(text: str, output_audio_path: Path) -> bool:
+    """ব্যাকআপ ১: gTTS (Google Translate TTS)"""
+    from gtts import gTTS
+    tts = gTTS(text=text, lang="bn", slow=False)
+    tts.save(str(output_audio_path))
+    return output_audio_path.exists() and output_audio_path.stat().st_size > 512
+
+
+def _synthesize_hf_sync(text: str, output_audio_path: Path) -> bool:
+    """ব্যাকআপ ২: Hugging Face Free Inference API (Meta MMS Bengali)"""
+    api_url = "https://huggingface.co"
+    response = requests.post(api_url, json={"inputs": text}, timeout=25)
+    if response.status_code == 200 and len(response.content) > 512:
+        with open(output_audio_path, "wb") as f:
+            f.write(response.content)
+        return True
+    return False
+
+
+async def _synthesize_with_fallbacks(text: str, output_audio_path: Path) -> dict:
+    """ধাপ-১, ধাপ-২ এবং ২টি ব্যাকআপ চালিয়ে অডিও নিশ্চিত করে"""
+    # ধাপ-১ ও ধাপ-২: Edge-TTS ভয়েস রোটেশন ও রিট্রাই
+    for voice in VOICE_POOL:
+        for attempt in range(1, 3):  # প্রতিটি ভয়েসে ২ বার চেষ্টা
+            try:
+                meta = await _synthesize_edge(text, voice, output_audio_path)
+                if not meta["empty"]:
+                    return meta
+            except Exception as e:
+                logger.warning(f"Edge-TTS ব্যর্থ ({voice}, চেষ্টা {attempt}): {e}")
+                await asyncio.sleep(2.5 * attempt)
+
+    # ব্যাকআপ ১: gTTS
+    try:
+        logger.warning("Edge-TTS সব ভয়েস ব্যর্থ। ব্যাকআপ ১ (gTTS) চালু হচ্ছে...")
+        ok = await asyncio.to_thread(_synthesize_gtts_sync, text, output_audio_path)
+        if ok:
+            return {"text": text, "start": 0.0, "end": 0.0, "empty": False}
+    except Exception as e:
+        logger.warning(f"ব্যাকআপ ১ (gTTS) ব্যর্থ: {e}")
+
+    # ব্যাকআপ ২: Hugging Face Meta MMS
+    try:
+        logger.warning("ব্যাকআপ ২ (Hugging Face MMS) চালু হচ্ছে...")
+        ok = await asyncio.to_thread(_synthesize_hf_sync, text, output_audio_path)
+        if ok:
+            return {"text": text, "start": 0.0, "end": 0.0, "empty": False}
+    except Exception as e:
+        logger.warning(f"ব্যাকআপ ২ (Hugging Face) ব্যর্থ: {e}")
+
+    raise RuntimeError("সবগুলো TTS মাধ্যম (Edge-TTS, gTTS, HuggingFace) ব্যর্থ হয়েছে।")
+
+
+def _convert_to_standard_mp3(raw_path: Path, final_mp3_path: Path):
+    """ভিন্ন ভিন্ন ব্যাকআপের অডিও ফরম্যাটকে একরকম MP3-তে রূপান্তর করে যাতে জোড়া লাগাতে সমস্যা না হয়"""
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", str(raw_path),
+            "-ar", "24000", "-ac", "1", "-b:a", "64k",
+            str(final_mp3_path)
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=True
+    )
 
 
 async def generate_bangla_voiceover(text: str, output_audio_path: Path, output_vtt_path: Path = None) -> bool:
     """
     বাংলা টেক্সট থেকে প্রাকৃতিক অডিও ও প্রতিটি বাক্যের সঠিক টাইমিং তৈরি করে
-
-    return: ব্যর্থ হলে False; সফল হলে True (VTT পাথ দিলে টাইমিং সহ VTT তৈরি)
+    return: ব্যর্থ হলে False; সফল হলে True
     """
     try:
-        logger.info(f"Edge-TTS দিয়ে বাংলা অডিও তৈরি হচ্ছে... কণ্ঠ: {TTS_VOICE}")
+        logger.info(f"মাল্টি-লেয়ার TTS দিয়ে বাংলা অডিও তৈরি হচ্ছে... মূল কণ্ঠ: {TTS_VOICE}")
         segments = split_sentences(text)
         if not segments:
             raise ValueError("সাবটাইটেল/ভয়েসের জন্য কোনো টেক্সট পাওয়া যায়নি")
 
-        # এক ঘণ্টার বেশি হলে পাবলিক endpoint-এ কল ফেইল করতে পারে, তবে রিলসে তা লাগবে না
         segments = segments[:40]
-
         output_audio_path.parent.mkdir(parents=True, exist_ok=True)
         temp_audio_path = output_audio_path.with_name(f"{output_audio_path.stem}.part")
         temp_audio_path.unlink(missing_ok=True)
 
         event_lines = []
         cursor = 0.0
+
         for idx, sentence in enumerate(segments):
-            segment_path = temp_audio_path.with_name(f"{output_audio_path.stem}_{idx:02d}.part")
-            segment_path.unlink(missing_ok=True)
+            raw_seg = temp_audio_path.with_name(f"{output_audio_path.stem}_{idx:02d}_raw.part")
+            norm_seg = temp_audio_path.with_name(f"{output_audio_path.stem}_{idx:02d}.mp3")
+            raw_seg.unlink(missing_ok=True)
+            norm_seg.unlink(missing_ok=True)
+
             try:
-                meta = await _synthesize(sentence, segment_path)
-                if meta["empty"]:
-                    raise RuntimeError(f"খালি অডিও এসেছে (সাবটাইটেল {idx + 1})")
+                meta = await _synthesize_with_fallbacks(sentence, raw_seg)
+
+                # অডিও ফরম্যাট ঠিক করা (যাতে Edge-TTS ও ব্যাকআপ অডিও একসাথে জোড়া লাগলে ক্র্যাশ না করে)
+                await asyncio.to_thread(_convert_to_standard_mp3, raw_seg, norm_seg)
 
                 start = cursor
                 span = meta["end"] - meta["start"]
                 if span < 0.5:
-                    # boundary টাইমিং না পেলে টুকরোটার আসল অডিও দৈর্ঘ্য নিই
-                    span = await asyncio.to_thread(_audio_duration, segment_path)
+                    span = await asyncio.to_thread(_audio_duration, norm_seg)
                 span = max(span, 0.4)
                 end = start + span
+
                 event_lines.append((start, end, sentence))
                 cursor = end
-                # টুকরোগুলো একসাথে জুড়ে নি
-                with open(temp_audio_path, "ab") as combined, open(segment_path, "rb") as part:
+
+                with open(temp_audio_path, "ab") as combined, open(norm_seg, "rb") as part:
                     combined.write(part.read())
             finally:
-                try:
-                    segment_path.unlink()
-                except OSError:
-                    pass
-            # স্পিচ সার্ভিসে একটানা কল করলে rate-limit হয়
-            await asyncio.sleep(0.15)
+                raw_seg.unlink(missing_ok=True)
+                norm_seg.unlink(missing_ok=True)
 
-        if cursor <= 0:
+            await asyncio.sleep(0.2)
+
+        if cursor <= 0 or not temp_audio_path.exists() or temp_audio_path.stat().st_size < 1024:
             raise RuntimeError("TTS থেকে কোনো বৈধ অডিও পাওয়া যায়নি")
 
         temp_audio_path.replace(output_audio_path)
@@ -140,7 +214,6 @@ async def generate_bangla_voiceover(text: str, output_audio_path: Path, output_v
 
 def _audio_duration(path: Path) -> float:
     """ffprobe দিয়ে অডিও টুকরোটার সঠিক দৈর্ঘ্য (সেকেন্ড)"""
-    import subprocess
     try:
         out = subprocess.check_output([
             "ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -149,6 +222,7 @@ def _audio_duration(path: Path) -> float:
         return float(out)
     except Exception:
         return 0.0
+
 
 def _vtt_ts(seconds: float) -> str:
     millis = int(round(seconds * 1000))
