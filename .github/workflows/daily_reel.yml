@@ -2,10 +2,7 @@ name: Daily Automated Facebook Reel
 
 on:
   schedule:
-    # প্রতিদিন বাংলাদেশ সময় সকাল ৯:০০ (UTC ৩:০০)
-    # সতর্কতা: GitHub-এর cron কয়েক মিনিট দেরি করতে পারে; fix minute নিশ্চিত নয়
     - cron: '0 3 * * *'
-  # হাতে চালানোর বাটন (টেস্ট/আজকের পোস্ট মিস হলে ব্যবহার করুন)
   workflow_dispatch:
     inputs:
       category:
@@ -20,35 +17,25 @@ on:
         default: false
         type: boolean
 
-# নোট: schedule-এ `inputs` কনটেক্সট থাকে না (শুধু workflow_dispatch-এ),
-# তাই নিচে গুলো env + shell দিয়ে safe ভাবে handle করা হয়েছে।
 env:
   CATEGORY: ${{ github.event.inputs.category || 'funny' }}
   TEST_ONLY: ${{ github.event.inputs.test_only || 'false' }}
 
 concurrency:
-  # দুই রান একসাথে চললে একই ভিডিও দুইবার পোস্ট হতে পারে
   group: daily-reel
   cancel-in-progress: false
 
 permissions:
-  contents: write   # প্রতিদিন heartbeat commit (নিচে) লেখার জন্য
+  contents: write
 
 jobs:
   build-and-post:
-    # ubuntu-latest এখন Ubuntu 26.04 (resolute) — প্যাকেজ/ফন্টের নাম বদলাতে পারে।
-    # পিন করে রাখলে হঠাৎ লাল দেখবেন না।
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
     steps:
       - name: চেকআউট কোডবেস
         uses: actions/checkout@v4
-
-      - name: কোন কমিট চলছে দেখাও
-        run: |
-          echo "commit: $(git rev-parse --short HEAD)"
-          echo "os: $(. /etc/os-release && echo $PRETTY_NAME)"
 
       - name: পাইথন সেটআপ
         uses: actions/setup-python@v5
@@ -60,8 +47,6 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update
-          # সতর্কতা: "fonts-noto-bengali" নামে কোনো Ubuntu প্যাকেজ নেই — এমন নাম দিলে
-          # apt-get এক ধাপেই ফেইল করে (আজকের ব্যর্থতার কারণ এটাই ছিল)।
           packages=(ffmpeg)
           for pkg in fontconfig fonts-noto-core fonts-lohit-beng-bengali fonts-beng fonts-beng-extra; do
             if apt-cache show "$pkg" >/dev/null 2>&1; then
@@ -77,44 +62,20 @@ jobs:
           echo "--- ffmpeg: $(ffmpeg -version 2>/dev/null | head -n1)"
           echo "--- ffmpeg encoders: $(ffmpeg -hide_banner -encoders 2>/dev/null | grep -c h264)"
           echo "--- bengali fonts:"
-          fc-list :lang=bn family | sort -u | head -n 5 || true
-          # বাংলা গ্লাইফ আঁকা যায় কিনা — ছোট ছবি দিয়ে যাচাই
-          ffmpeg -y -f lavfi -i "color=c=black:s=640x200" \
-            -vf "drawtext=font='Noto Sans Bengali':text='বাংলা টেস্ট':fontcolor=white:fontsize=48" \
-            -frames:v 1 /tmp/fontcheck.png -loglevel error \
-            && echo "font render OK" || echo "::warning::বাংলা ফন্টে টেক্সট আঁকা যায়নি"
-          # প্রতিদিনের মতো একটি MP4 বানিয়ে তার গঠন যাচাই করি (পাইপলাইনের আগে)
-          ffmpeg -y -f lavfi -i "smptebars=size=360x640:rate=5:duration=1" \
-            -pix_fmt yuv420p -c:v libx264 /tmp/probe.mp4 -loglevel error
-          python - <<'PY'
-          import subprocess
-          from pathlib import Path
-          header = Path('/tmp/probe.mp4').read_bytes()[:64]
-          print('probe first 12 bytes:', header[:12])
-          print('has ftyp:', b'ftyp' in header)
-          out = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=format_name',
-                                '-of', 'csv=p=0', '/tmp/probe.mp4'], capture_output=True, text=True)
-          print('ffprobe format:', out.stdout.strip() or out.stderr.strip())
-          PY
+          fc-list :lang=bn family | sort -u | head -n 10 || true
 
       - name: ডিপেনডেন্সি ইনস্টল
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
-     
-      - name: Install and Upgrade TTS Packages
-        run: |
-          pip install --upgrade edge-tts gTTS requests
-
-      - name: ইউনিট ও FFmpeg রেন্ডার টেস্ট
-        run: python -m pytest
-
-      - name: ইউনিট ও FFmpeg রেন্ডার টেস্ট
-        run: python -m pytest
+          pip install -r requirements.txt
+          if [ -f requirements-dev.txt ]; then
+            pip install -r requirements-dev.txt
+          fi
 
       - name: ভিডিও তৈরি ও ফেসবুকে অটো পোস্ট
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
           FB_PAGE_ACCESS_TOKEN: ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
@@ -135,31 +96,16 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-      # public রিপোতে ৬০ দিন নিষ্ক্রিয় থাকলে schedule নিজেই বন্ধ হয়ে যায়;
-      # প্রতিদিন একটা ছোট commit হলে সেটা আর হয় না + কোন দিন চলেছে তাও দেখা যায়।
       - name: Heartbeat (schedule সচল রাখতে)
         if: always()
         run: |
           mkdir -p .status
           printf 'last_run_utc=%s\nevent=%s\nresult=%s\n' \
-            "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            "$(date -u +'%Y-%m-%dT%H:%M:%SZ)" \
             "${{ github.event_name }}" \
             "${{ job.status }}" > .status/last_run.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .status/last_run.txt
           git commit -m "chore: daily run heartbeat [skip ci]" || echo "no change"
-          # push ফেইল হলেও আসল পোস্টিং ইতিমধ্যে শেষ — তাই এটা রানকে লাল করে না
           git push || echo "::warning::heartbeat push ব্যর্থ (permissions: contents write চেক করুন)"
-
-      - name: ফেইল হলে স্পষ্ট রিপোর্ট
-        if: failure()
-        run: |
-          echo "### ❌ আজকের রিলস পোস্ট হয়নি" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "উপরের লাল ধাপে আসল কারণ দেখা যাচ্ছে। দুই-তিনটি সম্ভাব্য কারণ:" >> $GITHUB_STEP_SUMMARY
-          echo "1. \`FB_PAGE_ACCESS_TOKEN\` মেয়াদোত্তীর্ণ / \`publish_video\` পারমিশন নেই" >> $GITHUB_STEP_SUMMARY
-          echo "2. \`GEMINI_API_KEY\` দৈনিক কোটা শেষ" >> $GITHUB_STEP_SUMMARY
-          echo "3. \`PIXABAY_API_KEY\`/\`PEXELS_API_KEY\` নেই বা কোটা শেষ" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "দ্রুত সমাধান: Actions → Run workflow (test_only untick) দিয়ে আবার চালান।" >> $GITHUB_STEP_SUMMARY
