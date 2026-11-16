@@ -1,17 +1,21 @@
 """
-gemini_agent.py - Google Gemini API দিয়ে ৩০-৪০ সেকেন্ডের ভাইরাল বাংলা স্ক্রিপ্ট তৈরি
-Gemini-র ফ্রি টিয়ার আছে, তবে দৈনিক রিকোয়েস্ট কোটা সীমিত।
+Gemini retry এবং Groq fallback দিয়ে বাংলা রিলস স্ক্রিপ্ট তৈরি।
+
+Gemini ও Groq দুটোই ব্যর্থ হলে পুরোনো স্ক্রিপ্ট দিয়ে স্বয়ংক্রিয় পোস্ট করা হয় না।
+নমুনা স্ক্রিপ্ট শুধু স্পষ্টভাবে --offline মোডে ব্যবহৃত হবে।
 """
 
 import copy
 import json
 import logging
-from config import GEMINI_API_KEY
+import time
 
-logging.basicConfig(level=logging.INFO)
+import requests
+
+from config import GEMINI_API_KEY, GROQ_API_KEY
+
 logger = logging.getLogger(__name__)
 
-# সমর্থিত ক্যাটাগরি: কমান্ড-লাইন/কনফিগের ভুল মান startup-এই ধরা পড়বে
 CATEGORY_LABELS = {
     "funny": "মজা/কৌতুক",
     "motivation": "মোটিভেশন/অনুপ্রেরণা",
@@ -21,41 +25,30 @@ CATEGORY_LABELS = {
 }
 
 SYSTEM_PROMPT = """
-আপনি বাংলাদেশের ফেইসবুক রিলস ও টিকটক ভিডিও তৈরির একজন অভিজ্ঞ স্ক্রিপ্ট রাইটার।
-আপনাকে ৩০-৪০ সেকেন্ডের একটি নিখুঁত বাংলা স্ক্রিপ্ট তৈরি করতে হবে যা ফেসবুকের
-কমিউনিটি স্ট্যান্ডার্ড মেনে চলে।
+আপনি বাংলাদেশের ফেইসবুক রিলসের বাংলা স্ক্রিপ্ট লেখক। ৩০-৪০ সেকেন্ডের,
+আকর্ষণীয় এবং পরিবারবান্ধব বাংলা স্ক্রিপ্ট তৈরি করুন। প্রথম ৩ সেকেন্ডে একটি
+আকর্ষণীয় হুক থাকবে। spoken_script-এ ৪-৮টি স্বাভাবিক বাংলা বাক্য থাকবে।
+বাক্যগুলো বাংলা দাঁড়ি (।), প্রশ্নবোধক (?) বা বিস্ময়সূচক (!) দিয়ে শেষ হবে।
+ভিডিও খোঁজার জন্য ইংরেজি search prompt দিন। শুধু বৈধ JSON দিন—Markdown
+code fence নয়।
 
-শর্তাবলী:
-১. ভাষা হবে অত্যন্ত আকর্ষণীয়, মজাদার এবং প্রাত্যহিক জীবনের সাথে মানানসই খাঁটি বাংলা।
-২. কোনো ধরনের ১৮+ বা আপত্তিকর ভাষা থাকবে না (১০০% ফ্যামিলি ফ্রেন্ডলি)।
-৩. প্রথম ৩ সেকেন্ডেই একটি চমকপ্রদ হুক (Hook) থাকবে যেন দর্শক স্ক্রোল না করে পুরোটা দেখে।
-৪. স্ক্রিপ্টটি যেন স্বাভাবিক গতিতে পড়লে ৩০ থেকে ৪০ সেকেন্ড সময় নেয় (৬০-৮০ শব্দ)।
-৫. ব্যাকগ্রাউন্ড ভিডিও খোঁজার জন্য একটি উপযুক্ত ইংরেজি স্টক-ভিডিও সার্চ কোয়েরি দিতে হবে।
-৬. spoken_script-এ ৪-৮টি বাক্য থাকবে, প্রতিটি বাক্য বাংলা দাঁড়ি (।) দিয়ে শেষ হবে —
-   কারণ প্রতিটি বাক্য আলাদা সাবটাইটেল হিসেবে দেখানো হয়।
-
-আউটপুটটি অবশ্যই নিচে দেওয়া JSON ফরম্যাটে হতে হবে:
+JSON schema:
 {
-  "title": "ছোট মজাদার শিরোনাম",
-  "spoken_script": "সম্পূর্ণ বাংলা ভয়েসওভার টেক্সট, বাক্যগুলো । দিয়ে আলাদা",
-  "subtitles": [
-    {"text": "প্রথম ৩-৪ সেকেন্ডের লাইন..."},
-    {"text": "পরের লাইনের ডায়নামিক টেক্সট..."}
-  ],
-  "video_search_prompt": "smiling bengali young man shocked mobile phone vertical video",
-  "caption": "ফেইসবুকের জন্য ক্যাপশন ও কল-টু-অ্যাকশন",
-  "hashtags": ["#banglareels", "#viralvideo", "#bangladesh", "#funnyreels"]
+  "title": "ছোট বাংলা শিরোনাম",
+  "spoken_script": "বাংলা ভয়েসওভার",
+  "subtitles": [{"text": "বাংলা সাবটাইটেল"}],
+  "video_search_prompt": "English stock video search prompt",
+  "caption": "বাংলা Facebook caption",
+  "hashtags": ["#banglareels", "#bangladesh"]
 }
-"""
+""".strip()
 
-# ------------------------------------------------------------
-# ফলব্যাক স্ক্রিপ্ট — শুধু স্পষ্টভাবে --offline মোডে ব্যবহৃত হয়
-# ------------------------------------------------------------
+# শুধু --offline মোডে ব্যবহারের জন্য।
 FALLBACK_SCRIPT = {
     "title": "বাঙালির সকালের চা ও রাজনীতি",
     "spoken_script": (
         "সকালে ঘুম থেকে উঠে চায়ের দোকানে না গেলে বাঙালির দিনই শুরু হয় না। "
-        "দোকানে গিয়ে এক কাপ লাল চা হাতে পেলেই শুরু হয় বিশ্বরাজনীতি নিয়ে তুমুল তর্ক! "
+        "দোকানে গিয়ে এক কাপ লাল চা হাতে পেলেই শুরু হয় বিশ্বরাজনীতি নিয়ে তুমুল আলোচনা। "
         "একজন বলে, আজ থেকেই সবকিছু বদলে যাবে; আরেকজন বলে, আগে দোকানের বাকি চা-নাশতার হিসাবটা মেলাও। "
         "পাশের টেবিলের বন্ধু আবার খবর না পড়েই সব খবরের বিশ্লেষক। "
         "চা ঠান্ডা হয়ে যায়, তর্ক কিন্তু থামে না। "
@@ -79,39 +72,37 @@ FALLBACK_SCRIPT = {
     "hashtags": ["#banglareels", "#chaaddicts", "#banglafunny", "#reelsfb"],
 }
 
-def generate_viral_reel_script(category="funny", offline=False) -> dict:
-    """
-    ফেইসবুক রিলসের জন্য হাই-রিটেনশন স্ক্রিপ্ট ও ব্যাকগ্রাউন্ড সার্চ কোয়েরি তৈরি করে
 
-    category: CATEGORY_LABELS-এর একটি কী
-    offline: True হলে Gemini-তে কল না করে স্যাম্পল স্ক্রিপ্ট ফেরত দেয় (কোটা বাঁচাতে)
-    """
-    category = (category or "funny").strip().lower()
-    if category not in CATEGORY_LABELS:
-        raise ValueError(
-            f"অসমর্থিত ক্যাটাগরি: '{category}'. বেছে নিন: {', '.join(CATEGORY_LABELS)}"
-        )
+def _parse_json_response(response_text: str) -> dict:
+    text = (response_text or "").strip()
 
-    if offline:
-        logger.info(f"[OFFLINE] Gemini কল এড়িয়ে '{category}' ক্যাটাগরির স্যাম্পল স্ক্রিপ্ট ব্যবহার হচ্ছে।")
-        return copy.deepcopy(FALLBACK_SCRIPT)
+    if text.startswith("```"):
+        text = text[3:].strip()
+        if text.startswith("json"):
+            text = text[4:].strip()
+        if text.endswith("```"):
+            text = text[:-3].strip()
 
-    if not GEMINI_API_KEY:
-        raise ValueError(
-            "GEMINI_API_KEY পাওয়া যায়নি! .env ফাইলে কী যুক্ত করুন অথবা --offline দিয়ে চালান।"
-        )
+    data = json.loads(text)
+    if not isinstance(data, dict) or not str(data.get("spoken_script", "")).strip():
+        raise ValueError("AI JSON-এ spoken_script নেই")
 
-    # import এখানে: --offline মোডে google-genai ইনস্টল না থাকলেও চলবে
+    data.setdefault("title", "বাংলা রিলস")
+    data.setdefault("subtitles", [])
+    data.setdefault(
+        "video_search_prompt",
+        "Bangladeshi lifestyle vertical stock video",
+    )
+    data.setdefault("caption", data["title"])
+    data.setdefault("hashtags", ["#banglareels", "#bangladesh"])
+    return data
+
+
+def _gemini_call_once(user_query: str) -> dict:
     from google import genai
     from google.genai import types
 
     client = genai.Client(api_key=GEMINI_API_KEY)
-    user_query = (
-        f"আজকের জন্য {CATEGORY_LABELS[category]} ({category}) ক্যাটাগরির একটি ট্রেন্ডিং "
-        "টপিকের ওপর ৩০ সেকেন্ডের বাংলা রিলস স্ক্রিপ্ট তৈরি করো। প্রতিদিন একই টপিক দিও না।"
-    )
-
-    logger.info("জেমিনি এআই-এর কাছে নতুন স্ক্রিপ্টের জন্য অনুরোধ পাঠানো হচ্ছে...")
     response = client.models.generate_content(
         model="gemini-3.8-flash",
         contents=user_query,
@@ -120,8 +111,85 @@ def generate_viral_reel_script(category="funny", offline=False) -> dict:
             response_mime_type="application/json",
         ),
     )
-    data = json.loads(response.text)
-    if not isinstance(data, dict) or not str(data.get("spoken_script", "")).strip():
-        raise ValueError("Gemini JSON-এ spoken_script নেই")
-    logger.info(f"সফলভাবে স্ক্রিপ্ট তৈরি হয়েছে: {data.get('title')}")
-    return data
+    return _parse_json_response(getattr(response, "text", ""))
+
+
+def _groq_call_once(user_query: str) -> dict:
+    if not GROQ_API_KEY:
+        raise ValueError("GROQ_API_KEY সেট করা নেই")
+
+    response = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+        json={
+            "model": "llama-3.3-70b-versatile",
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_query},
+            ],
+            "temperature": 0.7,
+            "response_format": {"type": "json_object"},
+        },
+        timeout=45,
+    )
+    response.raise_for_status()
+
+    content = response.json()["choices"][0]["message"]["content"]
+    return _parse_json_response(content)
+
+
+def generate_viral_reel_script(category="funny", offline=False) -> dict:
+    """Gemini-তে সর্বোচ্চ ৩ বার চেষ্টা করে; ব্যর্থ হলে Groq fallback করে।"""
+    category = (category or "funny").strip().lower()
+
+    if category not in CATEGORY_LABELS:
+        raise ValueError(
+            f"অসমর্থিত ক্যাটাগরি: '{category}'. "
+            f"বেছে নিন: {', '.join(CATEGORY_LABELS)}"
+        )
+
+    if offline:
+        logger.info("[OFFLINE] নমুনা স্ক্রিপ্ট ব্যবহার হচ্ছে।")
+        return copy.deepcopy(FALLBACK_SCRIPT)
+
+    user_query = (
+        f"আজকের জন্য {CATEGORY_LABELS[category]} ({category}) ক্যাটাগরির "
+        "একটি নতুন ৩০-৪০ সেকেন্ডের বাংলা রিলস স্ক্রিপ্ট তৈরি করো। "
+        "উপরের JSON schema অনুসরণ করো।"
+    )
+    last_error = None
+
+    if GEMINI_API_KEY:
+        for attempt in range(1, 4):
+            try:
+                logger.info("Gemini অনুরোধ: চেষ্টা %s/3", attempt)
+                script = _gemini_call_once(user_query)
+                logger.info("Gemini দিয়ে স্ক্রিপ্ট তৈরি: %s", script.get("title"))
+                return script
+            except Exception as exc:
+                last_error = exc
+                logger.warning("Gemini চেষ্টা %s/3 ব্যর্থ: %s", attempt, exc)
+                if attempt < 3:
+                    time.sleep(2 * attempt)
+    else:
+        logger.warning("GEMINI_API_KEY নেই; Groq-তে সরাসরি চেষ্টা করা হবে।")
+
+    if GROQ_API_KEY:
+        for attempt in range(1, 3):
+            try:
+                logger.info("Groq fallback: চেষ্টা %s/2", attempt)
+                script = _groq_call_once(user_query)
+                logger.info("Groq দিয়ে স্ক্রিপ্ট তৈরি: %s", script.get("title"))
+                return script
+            except Exception as exc:
+                last_error = exc
+                logger.warning("Groq চেষ্টা %s/2 ব্যর্থ: %s", attempt, exc)
+                if attempt < 2:
+                    time.sleep(2)
+
+    if last_error:
+        raise last_error
+
+    raise ValueError(
+        "GEMINI_API_KEY অথবা GROQ_API_KEY—অন্তত একটি সেট করতে হবে।"
+    )
