@@ -2,7 +2,8 @@ name: Daily Automated Facebook Reel
 
 on:
   schedule:
-    - cron: '0 3 * * *'
+    # ঠিক ৯:০০ টার ভিড় এড়াতে বাংলাদেশ সময় সকাল ৯:২৩ মিনিটে (UTC 3:23) সেট করা হয়েছে
+    - cron: '23 3 * * *'
   workflow_dispatch:
     inputs:
       category:
@@ -31,7 +32,7 @@ permissions:
 jobs:
   build-and-post:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 15
 
     steps:
       - name: চেকআউট কোডবেস
@@ -41,6 +42,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
       - name: FFmpeg ও বাংলা ফন্ট ইনস্টলেশন
         env:
@@ -73,6 +75,7 @@ jobs:
           fi
 
       - name: ভিডিও তৈরি ও ফেসবুকে অটো পোস্ট
+        timeout-minutes: 8
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
