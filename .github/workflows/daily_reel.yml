@@ -2,7 +2,7 @@ name: Daily Automated Facebook Reel
 
 on:
   schedule:
-    # ঠিক ৯:০০ টার ভিড় এড়াতে বাংলাদেশ সময় সকাল ৯:২৩ মিনিটে (UTC 3:23) সেট করা হয়েছে
+    # বাংলাদেশ সময় প্রতিদিন সকাল ৯:২৩ মিনিটে (UTC 3:23) অটো-রান হবে
     - cron: '23 3 * * *'
   workflow_dispatch:
     inputs:
@@ -85,7 +85,22 @@ jobs:
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           BRAND_NAME: ${{ secrets.BRAND_NAME }}
         run: |
-          ARGS="--category ${CATEGORY:-funny}"
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            DAY=$(TZ="Asia/Dhaka" date +%u)
+            case $DAY in
+              1) SELECTED_CAT="motivation" ;; # সোমবার
+              2) SELECTED_CAT="lifestyle" ;;  # মঙ্গলবার
+              3) SELECTED_CAT="story" ;;      # বুধবার
+              4) SELECTED_CAT="news" ;;       # বৃহস্পতিবার
+              5) SELECTED_CAT="funny" ;;      # শুক্রবার
+              6) SELECTED_CAT="story" ;;      # শনিবার
+              7) SELECTED_CAT="funny" ;;      # রবিবার
+            esac
+          else
+            SELECTED_CAT="${CATEGORY:-funny}"
+          fi
+
+          ARGS="--category $SELECTED_CAT"
           if [ "$TEST_ONLY" = "true" ]; then ARGS="$ARGS --test"; fi
           echo "running: python main.py $ARGS"
           python main.py $ARGS
@@ -109,7 +124,7 @@ jobs:
             echo "result=${{ job.status }}"
           } > .status/last_run.txt
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.email "41898282+github-actions[bot]@://github.com"
           git add .status/last_run.txt
           git commit -m "chore: daily run heartbeat [skip ci]" || echo "no change"
           git push || echo "::warning::heartbeat push ব্যর্থ (permissions: contents write চেক করুন)"
