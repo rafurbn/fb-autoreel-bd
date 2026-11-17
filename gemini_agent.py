@@ -102,13 +102,21 @@ def _gemini_call_once(user_query: str) -> dict:
     from google import genai
     from google.genai import types
 
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    # ৩০ সেকেন্ডের হার্ড টাইমআউট সেট করা হয়েছে (মিলিসেকেন্ডে ৩০,০০০)
+    client = genai.Client(
+        api_key=GEMINI_API_KEY,
+        http_options=types.HttpOptions(timeout=30000),
+    )
     response = client.models.generate_content(
-        model="gemini-3.8-flash",
+        model="gemini-2.5-flash",
         contents=user_query,
         config=types.GenerateContentConfig(
             system_instruction=SYSTEM_PROMPT,
             response_mime_type="application/json",
+            # অপ্রয়োজনীয় ব্যাকগ্রাউন্ড কল (AFC) বন্ধ রাখা হয়েছে
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                disable=True
+            ),
         ),
     )
     return _parse_json_response(getattr(response, "text", ""))
@@ -130,7 +138,7 @@ def _groq_call_once(user_query: str) -> dict:
             "temperature": 0.7,
             "response_format": {"type": "json_object"},
         },
-        timeout=45,
+        timeout=30,
     )
     response.raise_for_status()
 
