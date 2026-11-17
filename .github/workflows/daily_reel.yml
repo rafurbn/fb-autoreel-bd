@@ -100,10 +100,11 @@ jobs:
         if: always()
         run: |
           mkdir -p .status
-          printf 'last_run_utc=%s\nevent=%s\nresult=%s\n' \
-            "$(date -u +'%Y-%m-%dT%H:%M:%SZ)" \
-            "${{ github.event_name }}" \
-            "${{ job.status }}" > .status/last_run.txt
+          {
+            echo "last_run_utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "event=${{ github.event_name }}"
+            echo "result=${{ job.status }}"
+          } > .status/last_run.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .status/last_run.txt
