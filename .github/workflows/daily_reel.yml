@@ -82,7 +82,14 @@ jobs:
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           BRAND_NAME: ${{ secrets.BRAND_NAME }}
         run: |
-          ARGS="--category ${CATEGORY:-funny}"
+          CATEGORIES=(funny motivation lifestyle story news)
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            DAY_NUM=$((10#$(TZ='Asia/Dhaka' date +%j)))
+            SELECTED_CATEGORY="${CATEGORIES[$(((DAY_NUM - 1) % ${#CATEGORIES[@]}))]}"
+          else
+            SELECTED_CATEGORY="${CATEGORY:-funny}"
+          fi
+          ARGS="--category $SELECTED_CATEGORY"
           if [ "$TEST_ONLY" = "true" ]; then ARGS="$ARGS --test"; fi
           echo "running: python main.py $ARGS"
           python main.py $ARGS
