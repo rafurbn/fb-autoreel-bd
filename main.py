@@ -3,27 +3,29 @@ main.py - সম্পূর্ণ স্বয়ংক্রিয় পা�
 কমান্ড-লাইন থেকে একবার চালানো বা APScheduler দিয়ে প্রতিদিন নির্দিষ্ট সময়ে রান করার সুবিধা
 """
 
-import sys
 import argparse
 import datetime
-from pathlib import Path
 import logging
+from pathlib import Path
 import re
+import sys
 
 from config import OUTPUT_DIR, BRAND_LOGO_PATH, MUSIC_DIR
 from gemini_agent import generate_viral_reel_script, CATEGORY_LABELS
 from tts_engine import make_voiceover_sync
 from media_fetcher import fetch_vertical_background_video
-from video_editor import render_final_monetized_reel, build_subtitle_events, get_media_duration
+from video_editor import render_final_monetized_reel, get_media_duration
 from fb_uploader import upload_reel_to_facebook
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
+    format="%(asctime)s [%(levelname)s] %(message)s",
 )
 logger = logging.getLogger("AutoReelBD")
 
 _BG_MUSIC_NAMES = ("sample_bg.mp3", "sample_bg.m4a", "sample_bg.wav", "background.mp3")
+_VTT_TIME_RE = re.compile(r"^(?:(\d{2}):)?(\d{2}):(\d{2})[.,](\d{3})$")
+
 
 def find_bg_music() -> Path | None:
     """assets/music ফোল্ডারে যেকোনো নামে থাকা ব্যাকগ্রাউন্ড মিউজিক খুঁজে; না থাকলে None"""
@@ -38,14 +40,16 @@ def find_bg_music() -> Path | None:
     logger.warning(f"ব্যাকগ্রাউন্ড মিউজিক পাওয়া যায়নি ({MUSIC_DIR}) — মিউজিক ছাড়াই রেন্ডার হবে।")
     return None
 
-_VTT_TIME_RE = re.compile(r"^(\d{2}):(\d{2}):(\d{2})\.(\d{3})$")
 
 def _vtt_to_seconds(value: str) -> float:
-    match = _VTT_TIME_RE.match(value.strip())
+    token = value.strip().split()[0]
+    match = _VTT_TIME_RE.match(token)
     if not match:
         raise ValueError(f"অবৈধ VTT টাইমস্ট্যাম্প: {value}")
-    hours, minutes, seconds, millis = (int(part) for part in match.groups())
-    return hours * 3600 + minutes * 60 + seconds + millis / 1000
+    hours_str, minutes_str, seconds_str, millis_str = match.groups()
+    hours = int(hours_str) if hours_str is not None else 0
+    return hours * 3600 + int(minutes_str) * 60 + int(seconds_str) + int(millis_str) / 1000
+
 
 def load_vtt_events(vtt_path: Path) -> list:
     """TTS থেকে তৈরি .vtt ফাইল পড়ে (শুরু, শেষ, লেখা) tuples দেয়"""
@@ -53,21 +57,38 @@ def load_vtt_events(vtt_path: Path) -> list:
         return []
     events = []
     times = None
-    for line in vtt_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
+    buffer = []
+
+    def _flush():
+        nonlocal times, buffer
+        if times and buffer:
+            events.append((times[0], times[1], " ".join(buffer)))
+        times = None
+        buffer = []
+
+    for raw_line in vtt_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line:
+            _flush()
+            continue
         if "-->" in line:
-            parts = [part.strip() for part in line.split("-->")]
+            _flush()
+            parts = [part.strip() for part in line.split("-->", 1)]
             try:
                 times = (_vtt_to_seconds(parts[0]), _vtt_to_seconds(parts[1]))
             except (IndexError, ValueError):
                 times = None
-        elif times and line and not line.isdigit() and line != "WEBVTT":
-            events.append((times[0], times[1], line))
-            times = None
+        elif times is not None:
+            buffer.append(line)
+
+    _flush()
     return events
+
 
 def execute_daily_reel_pipeline(dry_run=False, category="funny", offline=False):
     """এক ক্লিকে সম্পূর্ণ ভিডিও জেনারেশন ও পাবলিশ প্রক্রিয়া সম্পন্ন করে"""
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
     today_tag = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     logger.info("==================================================")
     logger.info(f"দৈনিক অটোমেটেড ভিডিও প্রসেস শুরু: {today_tag} (category={category}, offline={offline})")
@@ -158,22 +179,28 @@ def execute_daily_reel_pipeline(dry_run=False, category="funny", offline=False):
     logger.error("ফেইসবুক আপলোড সম্পন্ন হয়নি। দয়া করে টোকেন ও পেজ আইডি চেক করুন।")
     return False
 
+
 def schedule_mode(run_hour=9, run_minute=0, category="funny"):
     """সার্ভারে APScheduler দিয়ে প্রতিদিন নির্দিষ্ট সময়ে রান করার অপশন (এশিয়া/ঢাকা সময়)"""
     from apscheduler.schedulers.blocking import BlockingScheduler
+
     scheduler = BlockingScheduler(timezone="Asia/Dhaka")
     logger.info(
         f"শিডিউলার চালু হয়েছে! প্রতিদিন বাংলাদেশ সময় {run_hour:02d}:{run_minute:02d}-এ "
         f"({category}) ভিডিও পোস্ট হবে..."
     )
     scheduler.add_job(
-        execute_daily_reel_pipeline, 'cron',
-        hour=run_hour, minute=run_minute, kwargs={"category": category},
+        execute_daily_reel_pipeline,
+        "cron",
+        hour=run_hour,
+        minute=run_minute,
+        kwargs={"category": category},
     )
     try:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):
         logger.info("শিডিউলার বন্ধ করা হয়েছে।")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FB AutoReel BD Automation Runner")
@@ -182,11 +209,15 @@ if __name__ == "__main__":
     parser.add_argument("--hour", type=int, default=9, help="প্রতিদিন পোস্ট করার নির্দিষ্ট ঘণ্টা (0-23)")
     parser.add_argument("--minute", type=int, default=0, help="প্রতিদিন পোস্ট করার মিনিট (0-59)")
     parser.add_argument(
-        "--category", type=str.lower, default="funny", choices=list(CATEGORY_LABELS),
+        "--category",
+        type=str.lower,
+        default="funny",
+        choices=list(CATEGORY_LABELS),
         help=f"স্ক্রিপ্টের ধরন (ডিফল্ট: funny)। অপশন: {', '.join(CATEGORY_LABELS)}",
     )
     parser.add_argument(
-        "--offline", action="store_true",
+        "--offline",
+        action="store_true",
         help="Gemini না ডেকে স্যাম্পল স্ক্রিপ্ট দিয়ে টেস্ট (ফ্রি কোটা বাঁচায়)",
     )
 
@@ -197,7 +228,9 @@ if __name__ == "__main__":
     else:
         try:
             success = execute_daily_reel_pipeline(
-                dry_run=args.test, category=args.category, offline=args.offline
+                dry_run=args.test,
+                category=args.category,
+                offline=args.offline,
             )
         except Exception:
             logger.exception("পাইপলাইন অপ্রত্যাশিতভাবে ব্যর্থ হয়েছে")
