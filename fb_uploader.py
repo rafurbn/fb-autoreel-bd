@@ -3,17 +3,20 @@ fb_uploader.py - মেটা অফিসিয়াল Graph API (v21.0) দ�
 Permanent Page Access Token ব্যবহার করে যাতে মেয়াদ শেষ না হয়
 """
 
-import requests
 import json
-import time
-from pathlib import Path
 import logging
-from config import FB_PAGE_ID, FB_PAGE_ACCESS_TOKEN
+from pathlib import Path
+import time
+
+import requests
+
+from config import FB_PAGE_ACCESS_TOKEN, FB_PAGE_ID
 
 logger = logging.getLogger(__name__)
 
 GRAPH_API_VERSION = "v21.0"
 BASE_URL = f"https://graph.facebook.com/{GRAPH_API_VERSION}"
+
 
 def _graph_error(resp: requests.Response) -> dict:
     """মেটা সার্ভারের আসল error message/code বের করে"""
@@ -21,6 +24,7 @@ def _graph_error(resp: requests.Response) -> dict:
         return resp.json().get("error", {}) or {}
     except ValueError:
         return {"message": resp.text[:500]}
+
 
 def _log_graph_error(step: str, resp: requests.Response) -> None:
     error = _graph_error(resp)
@@ -30,8 +34,9 @@ def _log_graph_error(step: str, resp: requests.Response) -> None:
         f"type={error.get('type')} | {error.get('message')}"
     )
 
+
 def _wait_until_uploaded(video_id: str, timeout: int = 300, interval: int = 5) -> bool:
-    """ভিডিও আপলোড সম্পন্ন হওয়া পর্যন্ত অপেক্ষা করে; Meta-র upload_complete অবস্থাও সম্পন্ন।"""
+    """ভিডিও আপলোড সম্পন্ন হওয়া পর্যন্ত অপেক্ষা করে।"""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -41,19 +46,30 @@ def _wait_until_uploaded(video_id: str, timeout: int = 300, interval: int = 5) -
                 timeout=20,
             )
             if resp.ok:
-                status = (resp.json().get("status") or {})
+                status = resp.json().get("status") or {}
                 state = status.get("video_status")
-                logger.info(f"ভিডিও আপলোড স্টেট: {state}")
-                if state in {"ready", "upload_complete"}:
+                upload_state = (status.get("uploading_phase") or {}).get("status")
+                logger.info(
+                    f"ভিডিও আপলোড স্টেট: video_status={state}, uploading_phase={upload_state}"
+                )
+
+                if state in {"ready", "upload_complete"} or upload_state == "complete":
                     return True
-                if state in {"error", "upload_failed", "expired"}:
+                if state in {"error", "upload_failed", "expired"} or upload_state == "error":
                     logger.error(f"ফেইসবুক ভিডিও আপলোড/প্রসেসিং ফেইল করেছে: {status}")
+                    return False
+            else:
+                _log_graph_error("স্টেট চেক", resp)
+                if resp.status_code in (400, 401, 403):
                     return False
         except requests.exceptions.RequestException as e:
             logger.warning(f"ভিডিও স্টেট চেক করা যাচ্ছে না: {e}")
+
         time.sleep(interval)
+
     logger.error(f"ভিডিও {timeout} সেকেন্ডেও আপলোড সম্পন্ন হয়নি।")
     return False
+
 
 def upload_reel_to_facebook(video_path: Path, caption: str, hashtags: list = None) -> bool:
     """
@@ -66,18 +82,29 @@ def upload_reel_to_facebook(video_path: Path, caption: str, hashtags: list = Non
         logger.error("ফেইসবুক ক্রেডেনশিয়াল নেই! FB_PAGE_ID ও FB_PAGE_ACCESS_TOKEN .env ফাইলে প্রদান করুন।")
         return False
 
-    tags_str = " ".join(hashtags) if hashtags else "#reelsfb #viral"
-    full_description = f"{caption}\n\n{tags_str}"
+    video_path = Path(video_path)
+    if not video_path.is_file() or video_path.stat().st_size == 0:
+        logger.error(f"আপলোডের জন্য বৈধ ভিডিও ফাইল পাওয়া যায়নি: {video_path}")
+        return False
+
+    clean_caption = (caption or "").strip()
+    normalized_tags = []
+    for tag in (hashtags or []):
+        t = str(tag).strip()
+        if t:
+            normalized_tags.append(t if t.startswith("#") else f"#{t}")
+    tags_str = " ".join(normalized_tags) if normalized_tags else "#reelsfb #viral"
+    full_description = f"{clean_caption}\n\n{tags_str}".strip()
 
     file_size = video_path.stat().st_size
-    logger.info(f"ফেইসবুক পেজে রিলস আপলোড শুরু... ফাইলের সাইজ: {file_size / (1024*1024):.2f} MB")
+    logger.info(f"ফেইসবুক পেজে রিলস আপলোড শুরু... ফাইলের সাইজ: {file_size / (1024 * 1024):.2f} MB")
 
     try:
         # ধাপ ১: আপলোড সেশন শুরু
         init_url = f"{BASE_URL}/{FB_PAGE_ID}/video_reels"
         init_payload = {
             "upload_phase": "start",
-            "access_token": FB_PAGE_ACCESS_TOKEN
+            "access_token": FB_PAGE_ACCESS_TOKEN,
         }
         r_init = requests.post(init_url, data=init_payload, timeout=20)
         if not r_init.ok:
@@ -98,19 +125,23 @@ def upload_reel_to_facebook(video_path: Path, caption: str, hashtags: list = Non
         headers = {
             "Authorization": f"OAuth {FB_PAGE_ACCESS_TOKEN}",
             "offset": "0",
-            "file_size": str(file_size)
+            "file_size": str(file_size),
         }
         # বড় ফাইল হলে রিড টাইমআউট বাড়ান (হিসাব: প্রতি MB-তে প্রায় ২ সেকেন্ড)
         read_timeout = max(120, int(file_size / (512 * 1024)))
         with open(video_path, "rb") as video_file:
-            r_upload = requests.post(upload_url, headers=headers, data=video_file, timeout=(20, read_timeout))
+            r_upload = requests.post(
+                upload_url,
+                headers=headers,
+                data=video_file,
+                timeout=(20, read_timeout),
+            )
         if not r_upload.ok:
             _log_graph_error("ভিডিও আপলোড", r_upload)
             return False
 
         logger.info("ভিডিও ফাইল ফেইসবুক সার্ভারে সফলভাবে পৌঁছেছে!")
 
-        # Meta upload_complete-কে upload শেষ হিসেবে জানায়; এরপর finish ধাপ প্রকাশনা শুরু করে।
         if not _wait_until_uploaded(video_id):
             return False
 
@@ -121,7 +152,7 @@ def upload_reel_to_facebook(video_path: Path, caption: str, hashtags: list = Non
             "access_token": FB_PAGE_ACCESS_TOKEN,
             "video_id": video_id,
             "video_state": "PUBLISHED",
-            "description": full_description
+            "description": full_description,
         }
         r_publish = requests.post(publish_url, data=publish_payload, timeout=60)
         if not r_publish.ok:
@@ -133,7 +164,6 @@ def upload_reel_to_facebook(video_path: Path, caption: str, hashtags: list = Non
             logger.info("অভিনন্দন! আপনার ভিডিওটি ফেইসবুকে সফলভাবে রিলস হিসেবে পোস্ট হয়েছে!")
             return True
 
-        # success না পেলে এটা ফেইলিউরই — আগে ভুল করে True রিটার্ন করত
         logger.error(f"পাবলিশ সফল হয়নি। রেসপন্স: {json.dumps(res_data, ensure_ascii=False)[:500]}")
         return False
 
