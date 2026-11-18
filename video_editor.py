@@ -2,49 +2,101 @@
 video_editor.py - FFmpeg ইঞ্জিন:
 ১. ইউনিক কালার ফিল্টার যোগ করে মেটাডাটা ও ফিঙ্গারপ্রিন্ট পরিবর্তন (Anti-Reused Content)
 ২. স্টাইলিশ বাংলা ডায়নামিক সাবটাইটেল বার্ন
-৩. পেজের নিজস্ব লোগো ও ওয়াটারমার্ক যুক্ত করা
+৩. পেজের নিজস্ব ওয়াটারমার্ক ("RAFU FOLK") যুক্ত করা
 ৪. মৃদু ব্যাকগ্রাউন্ড মিউজিক এবং ভয়েসওভার সঠিক ভলিউমে ব্লেন্ড করা
 """
 
-import subprocess
+import logging
 import os
 from pathlib import Path
-import logging
-from config import COLOR_FILTER, BRAND_NAME, FONT_PATH
+import subprocess
+
+from config import BRAND_NAME, COLOR_FILTER, FONT_PATH
 
 logger = logging.getLogger(__name__)
 
-def get_drawtext_font_path() -> Path | None:
+WATERMARK_TEXT = "RAFU FOLK"
+
+
+def _run_fc_match(pattern: str, fmt: str) -> str | None:
+    try:
+        out = subprocess.check_output(
+            ["fc-match", "-f", fmt, pattern],
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        ).decode("utf-8", errors="ignore").strip()
+        return out or None
+    except Exception:
+        return None
+
+
+def get_drawtext_font_path(prefer_bengali: bool = False) -> Path | None:
     """FFmpeg drawtext-এর জন্য একটি ইনস্টল করা ফন্ট খুঁজে"""
-    candidates = [FONT_PATH]
+    candidates = []
+    if prefer_bengali:
+        candidates.append(FONT_PATH)
+
     if os.name == "nt":
         windows_fonts = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
         candidates.extend([
+            windows_fonts / "arialbd.ttf",
             windows_fonts / "NIRMALA.TTF",
             windows_fonts / "ARIALUNI.TTF",
             windows_fonts / "arial.ttf",
         ])
     else:
+        if prefer_bengali:
+            candidates.extend([
+                Path("/usr/share/fonts/truetype/noto/NotoSansBengali-Regular.ttf"),
+                Path("/usr/share/fonts/truetype/noto/NotoSansBengaliUI-Regular.ttf"),
+                Path("/usr/share/fonts/truetype/lohit-bengali/Lohit-Bengali.ttf"),
+            ])
         candidates.extend([
-            Path("/usr/share/fonts/truetype/noto/NotoSansBengali-Regular.ttf"),
-            Path("/usr/share/fonts/truetype/noto/NotoSansBengaliUI-Regular.ttf"),
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
             Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+            Path("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"),
+            FONT_PATH,
         ])
-    return next((path for path in candidates if path.is_file()), None)
+
+    found = next((path for path in candidates if path.is_file()), None)
+    if found:
+        return found
+
+    if os.name != "nt":
+        fc_pattern = ":lang=bn" if prefer_bengali else "sans:bold"
+        matched_file = _run_fc_match(fc_pattern, "%{file}")
+        if matched_file and Path(matched_file).is_file():
+            return Path(matched_file)
+
+    return None
+
 
 def get_subtitle_font_family() -> str:
     """libass ফন্ট ম্যাচিংয়ের জন্য পরিবার-নাম (ফাইল-পাথ নয়)"""
-    return FONT_PATH.stem if FONT_PATH.is_file() else "Noto Sans Bengali"
+    if FONT_PATH.is_file():
+        return FONT_PATH.stem
+    if os.name != "nt":
+        family = _run_fc_match(":lang=bn", "%{family[0]}")
+        if family:
+            return family
+    return "Noto Sans Bengali"
+
 
 def escape_filter_path(file_path: Path) -> str:
-    """
-    FFmpeg filter আর্গুমেন্টে নিরাপদ পাথ:
-    ১. প্রথমে backslash নিজেই escape (\\ → \\\\) — আগে না করলে পরে যোগ করা \\: নষ্ট হয়
-    ২. তারপর : → \\: আর ' → \\' (Windows ড্রাইভ-letter ও ফাঁকা স্থানসহ পাথ)
-    """
-    path = str(file_path).replace("\\", "/").replace("\\", "\\\\").replace("$", "\\$")
-    path = path.replace("'", "'\\''").replace(":", "\\:")
+    """FFmpeg filter আর্গুমেন্টে (subprocess shell=False) নিরাপদ পাথ"""
+    path = str(file_path).replace("\\", "/")
+    path = path.replace(":", "\\:").replace("'", "\\'")
     return path
+
+
+def _escape_drawtext(text: str) -> str:
+    return (
+        text.replace("\\", "\\\\")
+        .replace(":", "\\:")
+        .replace("'", "\u2019")
+        .replace("%", "\\%")
+    )
+
 
 def render_final_monetized_reel(
     raw_video_path: Path,
@@ -54,7 +106,8 @@ def render_final_monetized_reel(
     bg_music_path: Path = None,
     logo_path: Path = None,
     subtitle_events: list | None = None,
-    subtitle_fallback_span: tuple[float, float] | None = None
+    subtitle_fallback_span: tuple[float, float] | None = None,
+    use_logo_overlay: bool = False,
 ) -> bool:
     """
     সবগুলো উপাদান একসাথে করে ফেইসবুক রিলসের জন্য সম্পূর্ণ রেডি ও মনিটাইজেশন-উপযোগী MP4 ভিডিও প্রস্তুত করে
@@ -63,6 +116,7 @@ def render_final_monetized_reel(
     subtitle_fallback_span: TTS টাইমিং না পেলে সব সাবটাইটেল ভাগ করে বসানোর (শুরু, শেষ) সীমা
     """
     logger.info("FFmpeg এডিটিং পাইপলাইন শুরু হচ্ছে...")
+    output_video_path.parent.mkdir(parents=True, exist_ok=True)
 
     # অডিও দৈর্ঘ্য নির্ণয় (এটাই ভিডিওর চূড়ান্ত দৈর্ঘ্য)
     duration = get_media_duration(voice_audio_path)
@@ -70,8 +124,6 @@ def render_final_monetized_reel(
         duration = 35.0  # ডিফল্ট সময়
 
     # সাবটাইটেল ফাইল তৈরি: আসল TTS টাইমিং থাকলে সেটি, নাহলে আনুপাতিক ভাগ
-    # ASS (নয় SRT) ব্যবহার করছি কারণ এতে PlayRes ও Style স্পষ্টভাবে লেখা যায় —
-    # ffmpeg-এর force_style স্ট্রিং Rilis ৭/৮-এ Alignment/MarginV কাজ করে না।
     ass_path = output_video_path.with_suffix(".ass")
     events = subtitle_events or build_subtitle_events(
         subtitles_list,
@@ -80,25 +132,29 @@ def render_final_monetized_reel(
     )
     write_ass_file(events, ass_path, width=1080, height=1920)
 
-    # ৯:১৬ ক্রপ এবং স্কেলিং (1080x1920) + কালার গ্রেডিং
+    # ৯:১৬ ক্রপ, স্কেলিং (1080x1920), ফিক্সড ৩০ fps এবং কালার গ্রেডিং
     video_filters = [
-        "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
-        COLOR_FILTER
+        "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30",
+        COLOR_FILTER,
     ]
 
-    # ফেইসবুক রিলস ফ্রেম ও ব্র্যান্ডের নাম যুক্ত করা
-    # (সাবটাইটেলের আগে বসে, তাতে স্ক্রিপ্টের লেখা ব্যানারের উপরে না থাকলেও ওয়াটারমার্ক সবসময় দেখা যায়)
-    drawtext_font = get_drawtext_font_path()
+    # ভিডিওর উপরের অংশে জলছাপ লেখা ("RAFU FOLK") যুক্ত করা
+    watermark_text = WATERMARK_TEXT.strip() or BRAND_NAME
+    has_non_ascii = any(ord(ch) > 127 for ch in watermark_text)
+    drawtext_font = get_drawtext_font_path(prefer_bengali=has_non_ascii)
     if drawtext_font:
         escaped_font = escape_filter_path(drawtext_font)
-        safe_brand = BRAND_NAME.replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:")
+        safe_watermark = _escape_drawtext(watermark_text)
         brand_banner = (
-            f"drawtext=fontfile='{escaped_font}':text='{safe_brand}':fontcolor=white:"
-            f"fontsize=42:x=(w-text_w)/2:y=120:box=1:boxcolor=black@0.6:boxborderw=15"
+            f"drawtext=fontfile='{escaped_font}':text='{safe_watermark}':"
+            f"fontcolor=white@0.85:fontsize=40:"
+            f"x=(w-text_w)/2:y=110:"
+            f"shadowcolor=black@0.75:shadowx=2:shadowy=2:"
+            f"box=1:boxcolor=black@0.35:boxborderw=14"
         )
         video_filters.append(brand_banner)
     else:
-        logger.warning("ব্র্যান্ড ব্যানারের জন্য উপযুক্ত ফন্ট পাওয়া যায়নি; ব্যানার ছাড়া রেন্ডার হবে।")
+        logger.warning("ওয়াটারমার্কের জন্য উপযুক্ত ফন্ট পাওয়া যায়নি; ওয়াটারমার্ক ছাড়া রেন্ডার হবে।")
 
     # সাবটাইটেল বার্ন — অবশ্যই scale/crop-এর পরে, যাতে ১০৮০×১৯২০ ফ্রেমের সাথে PlayRes মেলে
     if ass_path.exists() and ass_path.stat().st_size > 0:
@@ -115,7 +171,7 @@ def render_final_monetized_reel(
 
     next_input_index = 2
     logo_input_index = None
-    if logo_path and Path(logo_path).exists():
+    if use_logo_overlay and logo_path and Path(logo_path).exists():
         logo_input_index = next_input_index
         next_input_index += 1
         cmd.extend(["-i", str(logo_path)])
@@ -129,8 +185,8 @@ def render_final_monetized_reel(
     filter_graph = f"[0:v]{','.join(video_filters)}[vbase]"
     if logo_input_index is not None:
         filter_graph += (
-            f";[{logo_input_index}:v]scale=200:-1[logo]"
-            ";[vbase][logo]overlay=W-w-50:50:format=auto[vout]"
+            f";[{logo_input_index}:v]scale=160:-1[logo]"
+            ";[vbase][logo]overlay=W-w-45:95:format=auto[vout]"
         )
     else:
         filter_graph += ";[vbase]null[vout]"
@@ -138,7 +194,7 @@ def render_final_monetized_reel(
     if music_input_index is not None:
         filter_graph += (
             f";[1:a]volume=1.0[v_aud];[{music_input_index}:a]volume=0.15[bg_aud]"
-            ";[v_aud][bg_aud]amix=inputs=2:duration=first[out_aud]"
+            ";[v_aud][bg_aud]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[out_aud]"
         )
         audio_map = "[out_aud]"
     else:
@@ -150,19 +206,21 @@ def render_final_monetized_reel(
         "-map", audio_map,
     ])
 
-    # ভিডিও এক্সপোর্ট সেটিংস
+    # ভিডিও এক্সপোর্ট সেটিংস (Facebook Reels-এর জন্য yuv420p বাধ্যতামূলক)
     cmd.extend([
         "-t", str(duration),
         "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
         "-preset", "medium",
         "-crf", "22",
         "-c:a", "aac",
         "-b:a", "192k",
+        "-ar", "44100",
         "-movflags", "+faststart",
-        # মেটাডাটা স্ক্র্যাব ও নতুন মেটাডাটা রাইটিং (Avoid detection)
-        "-metadata", f"title={BRAND_NAME} Original Reel",
-        "-metadata", "artist=AI AutoReel Engine BD",
-        str(output_video_path)
+        # মেটাডাটা স্ক্র্যাব ও নতুন মেটাডাটা রাইটিং
+        "-metadata", f"title={watermark_text} Original Reel",
+        "-metadata", f"artist={watermark_text}",
+        str(output_video_path),
     ])
 
     logger.info(f"রেন্ডারিং শুরু হয়েছে... আনুমানিক সময়: {int(duration)} সেকেন্ড")
@@ -174,6 +232,7 @@ def render_final_monetized_reel(
         logger.error(f"FFmpeg রেন্ডার ফেইল করেছে: {err.stderr.decode('utf-8', errors='ignore')}")
         return False
 
+
 def build_subtitle_events(subtitles: list, start: float, end: float) -> list:
     """
     স্ক্রিপ্টের প্রতিটি লাইনকে উপলব্ধ সময়ের (start..end) মধ্যে সমানভাবে ভাগ করে দেয়।
@@ -184,7 +243,6 @@ def build_subtitle_events(subtitles: list, start: float, end: float) -> list:
     if not texts:
         return []
 
-    # লাইনের দৈর্ঘ্য অনুযায়ী সময় ভাগ (লম্বা বাক্য বেশি সময় পায়)
     weights = [max(len(text), 8) for text in texts]
     total_weight = sum(weights)
     span = max(end - start, 1.0)
@@ -197,19 +255,16 @@ def build_subtitle_events(subtitles: list, start: float, end: float) -> list:
         cursor += share
     return events
 
+
 def format_ass_time(seconds: float) -> str:
     """ASS টাইম: H:MM:SS.cc (সেন্টিসেকেন্ড)"""
     centis = int(round(max(seconds, 0.0) * 100))
     secs = centis // 100
     return f"{secs // 3600}:{(secs // 60) % 60:02d}:{secs % 60:02d}.{centis % 100:02d}"
 
+
 def write_ass_file(events: list, ass_file_path: Path, width: int = 1080, height: int = 1920) -> None:
-    """
-    (শুরু, শেষ, লেখা) tuples থেকে ASS সাবটাইটেল লেখে।
-    PlayResX/Y স্পষ্ট দিলে libass লেখার আকার ও নিচের দূরত্ব সঠিকভাবে হিসাব করে
-    (SRT + force_style-এ Alignment/MarginV সব ffmpeg বিল্ডে মানা যায় না)।
-    রং: PrimaryColour ASS-এ &HAABBGGRR — এখানে সাদা লেখা, কালো আউটলাইন।
-    """
+    """(শুরু, শেষ, লেখা) tuples থেকে ASS সাবটাইটেল লেখে।"""
     font_name = get_subtitle_font_family()
     header = (
         "[Script Info]\n"
@@ -239,6 +294,7 @@ def write_ass_file(events: list, ass_file_path: Path, width: int = 1080, height:
     with open(ass_file_path, "w", encoding="utf-8") as f:
         f.write(header + "".join(lines))
 
+
 def write_srt_file(events: list, srt_file_path: Path) -> None:
     """(শুরু, শেষ, লেখা) tuples থেকে SRT ফাইল লেখে (ডিবাগ/আলাদা ব্যবহারের জন্য)"""
     with open(srt_file_path, "w", encoding="utf-8") as f:
@@ -248,14 +304,14 @@ def write_srt_file(events: list, srt_file_path: Path) -> None:
                 f"{text}\n\n"
             )
 
+
 def format_srt_time(seconds: float) -> str:
-    # আগে (seconds - int(seconds)) * 1000 করলে float precision-এ 3661.999 → 998 হতো;
-    # মিলিসেকেন্ডে গোল করে ভাগ করলে এটা হয় না
     total_ms = int(round(max(seconds, 0.0) * 1000))
     secs, millis = divmod(total_ms, 1000)
     mins, secs = divmod(secs, 60)
     hours, mins = divmod(mins, 60)
     return f"{hours:02d}:{mins:02d}:{secs:02d},{millis:03d}"
+
 
 def get_media_duration(file_path: Path) -> float:
     """ফাইল থেকে সঠিক সেকেন্ড বের করে"""
@@ -263,7 +319,7 @@ def get_media_duration(file_path: Path) -> float:
         cmd = [
             "ffprobe", "-v", "error", "-show_entries",
             "format=duration", "-of", "default=noprint_wrappers=1:nokey=1",
-            str(file_path)
+            str(file_path),
         ]
         out = subprocess.check_output(cmd).decode().strip()
         return float(out)
