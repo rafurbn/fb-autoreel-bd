@@ -64,7 +64,7 @@ jobs:
           echo "--- bengali fonts:"
           fc-list :lang=bn family | sort -u | head -n 10 || true
 
-      - name: ডিপেনডেন্সি ইনস্টল
+      - name: ডিপেন্ডেন্সি ইনস্টল
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
@@ -101,11 +101,15 @@ jobs:
         run: |
           mkdir -p .status
           printf 'last_run_utc=%s\nevent=%s\nresult=%s\n' \
-            "$(date -u +'%Y-%m-%dT%H:%M:%SZ)" \
+            "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
             "${{ github.event_name }}" \
             "${{ job.status }}" > .status/last_run.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .status/last_run.txt
-          git commit -m "chore: daily run heartbeat [skip ci]" || echo "no change"
-          git push || echo "::warning::heartbeat push ব্যর্থ (permissions: contents write চেক করুন)"
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: daily run heartbeat [skip ci]"
+            git push || echo "::warning::heartbeat push ব্যর্থ (permissions: contents write চেক করুন)"
+          else
+            echo "no change"
+          fi
