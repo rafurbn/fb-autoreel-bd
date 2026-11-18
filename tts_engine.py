@@ -28,21 +28,36 @@ VOICE_POOL = list(dict.fromkeys([
 
 
 def split_sentences(text: str) -> list[str]:
-    """বাংলা দাঁড়ি/প্রশ্নবোধক ইত্যাদি ধরে বাক্য ভাগ করে।"""
+    """বাংলা দাঁড়ি/প্রশ্নবোধক ইত্যাদি ধরে বাক্য ভাগ করে এবং শুধু-চিহ্ন অংশ বাদ দেয়।"""
     cleaned = " ".join((text or "").split())
     if not cleaned:
         return []
 
     sentences = []
-    buffer = ""
-    for char in cleaned:
-        buffer += char
-        if char in SENTENCE_ENDINGS and buffer.strip():
-            sentences.append(buffer.strip())
-            buffer = ""
+    buffer = []
+    total_len = len(cleaned)
 
-    if buffer.strip():
-        sentences.append(buffer.strip())
+    for idx, char in enumerate(cleaned):
+        buffer.append(char)
+        if char in SENTENCE_ENDINGS:
+            prev_ch = cleaned[idx - 1] if idx > 0 else ""
+            next_ch = cleaned[idx + 1] if idx + 1 < total_len else ""
+
+            # দশমিক সংখ্যা (যেমন 3.5 বা ৩.৫) ভাঙবে না
+            if char == "." and prev_ch.isdigit() and next_ch.isdigit():
+                continue
+            # পরপর বিরামচিহ্ন (যেমন ..., ?!) একসাথে রাখবে
+            if next_ch in SENTENCE_ENDINGS:
+                continue
+
+            segment = "".join(buffer).strip()
+            if any(ch.isalnum() for ch in segment):
+                sentences.append(segment)
+            buffer = []
+
+    tail = "".join(buffer).strip()
+    if tail and any(ch.isalnum() for ch in tail):
+        sentences.append(tail)
 
     return sentences
 
@@ -98,46 +113,52 @@ def _synthesize_hf_sync(text: str, output_audio_path: Path) -> bool:
     Hugging Face Inference API-তে facebook/mms-tts-ben চেষ্টা করে।
     HF_TOKEN ঐচ্ছিক; public inference-এর access/limit পরিবর্তন হতে পারে।
     """
-    url = (
-        "https://api-inference.huggingface.co/models/facebook/mms-tts-ben"
+    urls = (
+        "https://router.huggingface.co/hf-inference/models/facebook/mms-tts-ben",
+        "https://api-inference.huggingface.co/models/facebook/mms-tts-ben",
     )
     headers = {"Accept": "audio/*"}
     if HF_TOKEN:
         headers["Authorization"] = f"Bearer {HF_TOKEN}"
 
-    for attempt in range(1, 4):
-        try:
-            response = requests.post(
-                url,
-                headers=headers,
-                json={"inputs": text},
-                timeout=60,
-            )
-        except requests.RequestException as exc:
-            logger.warning("Hugging Face network error, চেষ্টা %s/3: %s", attempt, exc)
-            if attempt < 3:
+    for url in urls:
+        for attempt in range(1, 4):
+            try:
+                response = requests.post(
+                    url,
+                    headers=headers,
+                    json={"inputs": text},
+                    timeout=60,
+                )
+            except requests.RequestException as exc:
+                logger.warning("Hugging Face network error, চেষ্টা %s/3: %s", attempt, exc)
+                if attempt < 3:
+                    time.sleep(2 * attempt)
+                    continue
+                break
+
+            content_type = response.headers.get("content-type", "").lower()
+            is_audio = "json" not in content_type and len(response.content) > 512
+
+            if response.ok and is_audio:
+                output_audio_path.write_bytes(response.content)
+                return True
+
+            if response.status_code in (404, 410):
+                logger.warning("Hugging Face endpoint অকার্যকর (%s): %s", response.status_code, url)
+                break
+
+            # Model cold start / temporary overload হলে আবার চেষ্টা।
+            if response.status_code in (429, 500, 502, 503, 504) and attempt < 3:
                 time.sleep(2 * attempt)
                 continue
-            return False
 
-        content_type = response.headers.get("content-type", "").lower()
-        is_audio = "json" not in content_type and len(response.content) > 512
-
-        if response.ok and is_audio:
-            output_audio_path.write_bytes(response.content)
-            return True
-
-        # Model cold start / temporary overload হলে আবার চেষ্টা।
-        if response.status_code in (429, 500, 502, 503, 504) and attempt < 3:
-            time.sleep(2 * attempt)
-            continue
-
-        logger.warning(
-            "Hugging Face TTS response: %s %s",
-            response.status_code,
-            response.text[:250],
-        )
-        return False
+            logger.warning(
+                "Hugging Face TTS response: %s %s",
+                response.status_code,
+                response.text[:250],
+            )
+            break
 
     return False
 
@@ -145,29 +166,44 @@ def _synthesize_hf_sync(text: str, output_audio_path: Path) -> bool:
 async def _synthesize_with_fallbacks(
     text: str,
     output_audio_path: Path,
+    state: dict | None = None,
 ) -> dict:
     """Edge-TTS voice rotation → gTTS → Hugging Face।"""
-    for voice in VOICE_POOL:
-        for attempt in range(1, 3):
-            output_audio_path.unlink(missing_ok=True)
-            try:
-                meta = await _synthesize_edge(text, voice, output_audio_path)
-                logger.info("Edge-TTS সফল: %s", voice)
-                return meta
-            except Exception as exc:
-                logger.warning(
-                    "Edge-TTS ব্যর্থ (কণ্ঠ %s, চেষ্টা %s): %s",
-                    voice,
-                    attempt,
-                    exc,
-                )
+    state = state if state is not None else {}
+
+    if not state.get("edge_unavailable"):
+        preferred = state.get("preferred_voice")
+        voices = (
+            [preferred] + [v for v in VOICE_POOL if v != preferred]
+            if preferred
+            else VOICE_POOL
+        )
+
+        for voice in voices:
+            for attempt in range(1, 3):
                 output_audio_path.unlink(missing_ok=True)
-                if attempt < 2:
-                    await asyncio.sleep(2 * attempt)
+                try:
+                    meta = await _synthesize_edge(text, voice, output_audio_path)
+                    if state.get("preferred_voice") != voice:
+                        logger.info("Edge-TTS সফল: %s", voice)
+                    state["preferred_voice"] = voice
+                    return meta
+                except Exception as exc:
+                    logger.warning(
+                        "Edge-TTS ব্যর্থ (কণ্ঠ %s, চেষ্টা %s): %s",
+                        voice,
+                        attempt,
+                        exc,
+                    )
+                    output_audio_path.unlink(missing_ok=True)
+                    if attempt < 2:
+                        await asyncio.sleep(2 * attempt)
+
+        state["edge_unavailable"] = True
 
     output_audio_path.unlink(missing_ok=True)
     try:
-        logger.warning("Edge-TTS কণ্ঠগুলো ব্যর্থ; gTTS fallback চেষ্টা হচ্ছে।")
+        logger.warning("Edge-TTS ব্যর্থ; gTTS fallback চেষ্টা হচ্ছে।")
         if await asyncio.to_thread(
             _synthesize_gtts_sync,
             text,
@@ -195,14 +231,18 @@ async def _synthesize_with_fallbacks(
 
 
 def _run_ffmpeg(args: list[str], cwd: Path | None = None) -> None:
-    subprocess.run(
-        args,
-        cwd=cwd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        check=True,
-        timeout=120,
-    )
+    try:
+        subprocess.run(
+            args,
+            cwd=cwd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            check=True,
+            timeout=120,
+        )
+    except subprocess.CalledProcessError as exc:
+        err_msg = (exc.stderr or b"").decode(errors="ignore")[-400:]
+        raise RuntimeError(f"FFmpeg ব্যর্থ: {err_msg}") from exc
 
 
 def _convert_to_standard_wav(raw_path: Path, wav_path: Path) -> None:
@@ -312,6 +352,7 @@ async def generate_bangla_voiceover(
         event_lines = []
         wav_paths = []
         cursor = 0.0
+        tts_state = {}
 
         # Temporary directory output-এর একই filesystem-এ থাকায় final replace নিরাপদ।
         with tempfile.TemporaryDirectory(
@@ -321,10 +362,10 @@ async def generate_bangla_voiceover(
             temp_dir = Path(temp)
 
             for idx, sentence in enumerate(sentences):
-                raw_path = temp_dir / f"segment_{idx:02d}.raw"
+                raw_path = temp_dir / f"segment_{idx:02d}.bin"
                 wav_path = temp_dir / f"segment_{idx:02d}.wav"
 
-                await _synthesize_with_fallbacks(sentence, raw_path)
+                await _synthesize_with_fallbacks(sentence, raw_path, state=tts_state)
                 await asyncio.to_thread(
                     _convert_to_standard_wav,
                     raw_path,
