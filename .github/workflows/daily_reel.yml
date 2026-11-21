@@ -2,7 +2,7 @@ name: Daily Automated Facebook Reel
 
 on:
   schedule:
-    - cron: '0 3 * * *'
+    - cron: '37 2 * * *'
   workflow_dispatch:
     inputs:
       category:
