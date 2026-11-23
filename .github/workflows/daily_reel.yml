@@ -2,7 +2,8 @@ name: Daily Automated Facebook Reel
 
 on:
   schedule:
-    - cron: '37 1 * * *'
+    # ১৩:১৭ UTC = সন্ধ্যা ৭:১৭ PM BST; GitHub cron delay (০-১২ ঘণ্টা) হলেও সকাল ৭:৪৫ AM BST-এর আগেই শিডিউল হবে
+    - cron: '17 13 * * *'
   workflow_dispatch:
     inputs:
       category:
@@ -13,6 +14,11 @@ on:
         options: [funny, motivation, lifestyle, story, news]
       test_only:
         description: 'শুধু টেস্ট (ফেসবুকে পোস্ট করবে না)'
+        required: false
+        default: false
+        type: boolean
+      publish_now:
+        description: 'এখনই সরাসরি পোস্ট করুন (বন্ধ থাকলে সকাল ৭:৪৫-এ শিডিউল হবে)'
         required: false
         default: false
         type: boolean
@@ -81,6 +87,8 @@ jobs:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           BRAND_NAME: ${{ secrets.BRAND_NAME }}
+          FB_SCHEDULE_TIME: ${{ vars.FB_SCHEDULE_TIME || secrets.FB_SCHEDULE_TIME || '07:45' }}
+          FB_SCHEDULE_TIMEZONE: 'Asia/Dhaka'
         run: |
           CATEGORIES=(funny motivation lifestyle story news)
           if [ "${{ github.event_name }}" = "schedule" ]; then
@@ -91,6 +99,7 @@ jobs:
           fi
           ARGS="--category $SELECTED_CATEGORY"
           if [ "$TEST_ONLY" = "true" ]; then ARGS="$ARGS --test"; fi
+          if [ "${{ github.event.inputs.publish_now }}" = "true" ]; then ARGS="$ARGS --publish-now"; fi
           echo "running: python main.py $ARGS"
           python main.py $ARGS
 
