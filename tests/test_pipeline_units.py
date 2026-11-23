@@ -3,7 +3,10 @@
 import pytest
 
 import main as main_mod
-from fb_uploader import upload_reel_to_facebook
+import datetime
+from zoneinfo import ZoneInfo
+
+from fb_uploader import compute_next_schedule_timestamp, upload_reel_to_facebook
 from gemini_agent import CATEGORY_LABELS, FALLBACK_SCRIPT, generate_viral_reel_script
 from tts_engine import split_sentences
 
@@ -175,3 +178,111 @@ def test_uploader_returns_true_only_on_success(tmp_path, monkeypatch, video_stat
 
     monkeypatch.setattr("fb_uploader.requests", FakeRequests)
     assert upload_reel_to_facebook(video, "caption") is True
+
+
+def test_compute_next_schedule_timestamp_same_day_when_enough_lead_time():
+    dhaka = ZoneInfo("Asia/Dhaka")
+    now = datetime.datetime(2026, 11, 23, 3, 17, 0, tzinfo=dhaka)
+    ts, target = compute_next_schedule_timestamp("07:45", "Asia/Dhaka", now=now)
+    assert target == datetime.datetime(2026, 11, 23, 7, 45, 0, tzinfo=dhaka)
+    assert ts == int(target.timestamp())
+
+
+def test_compute_next_schedule_timestamp_rolls_to_next_day_inside_ten_minutes():
+    dhaka = ZoneInfo("Asia/Dhaka")
+    now = datetime.datetime(2026, 11, 23, 7, 36, 0, tzinfo=dhaka)
+    ts, target = compute_next_schedule_timestamp("07:45", "Asia/Dhaka", now=now)
+    assert target == datetime.datetime(2026, 11, 24, 7, 45, 0, tzinfo=dhaka)
+    assert ts == int(target.timestamp())
+
+
+def test_compute_next_schedule_timestamp_evening_targets_next_morning():
+    dhaka = ZoneInfo("Asia/Dhaka")
+    now = datetime.datetime(2026, 11, 23, 19, 17, 0, tzinfo=dhaka)
+    ts, target = compute_next_schedule_timestamp("07:45", "Asia/Dhaka", now=now)
+    assert target == datetime.datetime(2026, 11, 24, 7, 45, 0, tzinfo=dhaka)
+    assert ts == int(target.timestamp())
+
+
+def test_uploader_sends_scheduled_payload_when_schedule_time_set(tmp_path, monkeypatch):
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"\x00" * 10)
+    monkeypatch.setattr("fb_uploader.FB_PAGE_ID", "123")
+    monkeypatch.setattr("fb_uploader.FB_PAGE_ACCESS_TOKEN", "token")
+
+    captured = []
+
+    class FakeResponse:
+        ok = True
+        status_code = 200
+        text = "{}"
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class FakeRequests:
+        @staticmethod
+        def post(url, **kwargs):
+            data = kwargs.get("data")
+            if isinstance(data, dict):
+                captured.append(data)
+            if "video_reels" in url and isinstance(data, dict) and data.get("upload_phase") == "start":
+                return FakeResponse({"video_id": "v1", "upload_url": "https://upload.example"})
+            if url == "https://upload.example":
+                return FakeResponse({})
+            return FakeResponse({"success": True})
+
+        @staticmethod
+        def get(url, **kwargs):
+            return FakeResponse({"status": {"video_status": "ready"}})
+
+    monkeypatch.setattr("fb_uploader.requests", FakeRequests)
+    assert upload_reel_to_facebook(video, "caption", schedule_time="07:45") is True
+    finish_payload = captured[-1]
+    assert finish_payload["video_state"] == "SCHEDULED"
+    assert isinstance(finish_payload["scheduled_publish_time"], int)
+
+
+def test_uploader_publishes_immediately_when_schedule_disabled(tmp_path, monkeypatch):
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"\x00" * 10)
+    monkeypatch.setattr("fb_uploader.FB_PAGE_ID", "123")
+    monkeypatch.setattr("fb_uploader.FB_PAGE_ACCESS_TOKEN", "token")
+
+    captured = []
+
+    class FakeResponse:
+        ok = True
+        status_code = 200
+        text = "{}"
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class FakeRequests:
+        @staticmethod
+        def post(url, **kwargs):
+            data = kwargs.get("data")
+            if isinstance(data, dict):
+                captured.append(data)
+            if "video_reels" in url and isinstance(data, dict) and data.get("upload_phase") == "start":
+                return FakeResponse({"video_id": "v1", "upload_url": "https://upload.example"})
+            if url == "https://upload.example":
+                return FakeResponse({})
+            return FakeResponse({"success": True})
+
+        @staticmethod
+        def get(url, **kwargs):
+            return FakeResponse({"status": {"video_status": "ready"}})
+
+    monkeypatch.setattr("fb_uploader.requests", FakeRequests)
+    assert upload_reel_to_facebook(video, "caption", schedule_time="") is True
+    finish_payload = captured[-1]
+    assert finish_payload["video_state"] == "PUBLISHED"
+    assert "scheduled_publish_time" not in finish_payload

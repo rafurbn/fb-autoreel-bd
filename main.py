@@ -85,7 +85,7 @@ def load_vtt_events(vtt_path: Path) -> list:
     return events
 
 
-def execute_daily_reel_pipeline(dry_run=False, category="funny", offline=False):
+def execute_daily_reel_pipeline(dry_run=False, category="funny", offline=False, publish_now=False):
     """এক ক্লিকে সম্পূর্ণ ভিডিও জেনারেশন ও পাবলিশ প্রক্রিয়া সম্পন্ন করে"""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -170,7 +170,13 @@ def execute_daily_reel_pipeline(dry_run=False, category="funny", offline=False):
         return True
 
     logger.info("ধাপ ৫: ফেইসবুক পেজে স্বয়ংক্রিয় আপলোড শুরু হচ্ছে...")
-    uploaded = upload_reel_to_facebook(final_video_path, caption=caption, hashtags=hashtags)
+    schedule_override = "" if publish_now else None
+    uploaded = upload_reel_to_facebook(
+        final_video_path,
+        caption=caption,
+        hashtags=hashtags,
+        schedule_time=schedule_override,
+    )
 
     if uploaded:
         logger.info("অভিনন্দন! আজকের ভিডিও ফেইসবুকে সফলভাবে লাইভ হয়েছে!")
@@ -220,6 +226,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Gemini না ডেকে স্যাম্পল স্ক্রিপ্ট দিয়ে টেস্ট (ফ্রি কোটা বাঁচায়)",
     )
+    parser.add_argument(
+        "--publish-now",
+        action="store_true",
+        help="শিডিউল সময় উপেক্ষা করে সাথে সাথেই ফেসবুকে পোস্ট করুন",
+    )
 
     args = parser.parse_args()
 
@@ -231,6 +242,7 @@ if __name__ == "__main__":
                 dry_run=args.test,
                 category=args.category,
                 offline=args.offline,
+                publish_now=args.publish_now,
             )
         except Exception:
             logger.exception("পাইপলাইন অপ্রত্যাশিতভাবে ব্যর্থ হয়েছে")

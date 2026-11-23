@@ -37,6 +37,9 @@ HF_TOKEN = _get_env("HF_TOKEN")
 # Facebook Graph API
 FB_PAGE_ID = _get_env("FB_PAGE_ID")
 FB_PAGE_ACCESS_TOKEN = _get_env("FB_PAGE_ACCESS_TOKEN")
+# প্রতিদিন নির্দিষ্ট সময়ে রিলস শিডিউল করতে "HH:MM" (যেমন "07:45"); সাথে সাথে পোস্ট করতে "now"
+FB_SCHEDULE_TIME = _get_env("FB_SCHEDULE_TIME", "07:45")
+FB_SCHEDULE_TIMEZONE = _get_env("FB_SCHEDULE_TIMEZONE", "Asia/Dhaka")
 
 # Stock footage API
 PEXELS_API_KEY = _get_env("PEXELS_API_KEY")
